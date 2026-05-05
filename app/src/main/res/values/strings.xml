@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Navi Overlay</string>
+    <string name="accessibility_description">Определяет, какое приложение сейчас открыто, чтобы показывать окно трека только поверх выбранного навигатора.</string>
+</resources>

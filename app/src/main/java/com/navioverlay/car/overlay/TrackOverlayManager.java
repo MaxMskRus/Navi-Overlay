@@ -1,0 +1,1333 @@
+package com.navioverlay.car.overlay;
+
+import android.content.Context;
+import android.content.res.Configuration;
+import android.animation.ObjectAnimator;
+import android.graphics.Bitmap;
+import android.graphics.PixelFormat;
+import android.graphics.Point;
+import android.graphics.Rect;
+import android.graphics.Typeface;
+import android.graphics.drawable.Drawable;
+import android.media.AudioManager;
+import android.os.Build;
+import android.os.Handler;
+import android.os.Looper;
+import android.os.SystemClock;
+import android.provider.Settings;
+import android.text.SpannableStringBuilder;
+import android.text.Spanned;
+import android.text.TextUtils;
+import android.text.style.ForegroundColorSpan;
+import android.util.DisplayMetrics;
+import android.view.Display;
+import android.view.Gravity;
+import android.view.HapticFeedbackConstants;
+import android.view.KeyEvent;
+import android.view.MotionEvent;
+import android.view.ViewConfiguration;
+import android.view.WindowManager;
+import android.view.WindowMetrics;
+import android.widget.ImageView;
+import android.widget.LinearLayout;
+import android.widget.TextView;
+import android.view.animation.LinearInterpolator;
+import com.navioverlay.car.core.OverlayFonts;
+import com.navioverlay.car.core.OverlayShapeDrawable;
+import com.navioverlay.car.core.Prefs;
+import com.navioverlay.car.core.Ui;
+import com.navioverlay.car.engine.TrackSnapshot;
+
+/** Overlay с быстрым обновлением текста, drag, double-tap reset и доп. функциями. */
+public final class TrackOverlayManager {
+    private TrackOverlayManager(){}
+
+    private static LinearLayout overlayView;
+    private static LinearLayout panelView;
+    private static LinearLayout contentRow;
+    private static ImageView albumArtView;
+    private static TextView lineView;
+    private static LinearLayout controlsRow;
+    private static WindowManager wm;
+    private static WindowManager.LayoutParams currentParams;
+    private static boolean hostAttached = false;
+    private static boolean contentSoftHidden = false;
+    private static String lastTitle="", lastArtist="", lastRenderedText="";
+    private static Bitmap lastAlbumArt;
+    private static boolean controlsVisible=false;
+    private static int lastDesign=-1;
+    private static final Handler h=new Handler(Looper.getMainLooper());
+    private static final Runnable hideTask = TrackOverlayManager::hideOnMain;
+    private static final Runnable testHideTask = TrackOverlayManager::hideTestOnMain;
+    private static final Runnable undimTask = TrackOverlayManager::restoreAlphaOnMain;
+    private static final Runnable hideEditModeTask = TrackOverlayManager::hideEditModeOnMain;
+    private static final Runnable collapseHiddenHostTask = TrackOverlayManager::collapseHiddenHostOnMain;
+    private static ObjectAnimator marqueeAnimator;
+    private static int lastAppliedPosition = -1;
+    private static boolean lastAppliedCustomPosition = false;
+    private static int lastAppliedOffsetX = -1;
+    private static int lastAppliedOffsetY = -1;
+    private static boolean fixedWindowEditMode = false;
+    private static boolean resizingFixedWindow = false;
+    private static float pinchStartSpanX = 0f;
+    private static int pinchStartWidth = 0;
+
+    private static int downX, downY;
+    private static int downGravity;
+    private static float touchX, touchY;
+    private static boolean dragging;
+    private static boolean dragArmed;
+    private static boolean longPressTriggered;
+    private static Runnable pendingLongPressTask;
+    private static long lastTapUpMs=0L;
+    private static final long DOUBLE_TAP_MS=320L;
+    private static final int TAP_SLOP_PX=12;
+    private static final long EDIT_MODE_TIMEOUT_MS = 4000L;
+    private static final long HIDDEN_HOST_COLLAPSE_DELAY_MS = 2000L;
+    private static final int TEST_DISPLAY_MS = 5000;
+    private static long testModeUntilAt = 0L;
+    private static long volumeDimUntilAt = 0L;
+
+    public static boolean canDraw(Context c){return Settings.canDrawOverlays(c);}
+    public static void show(Context c,String title,String artist){ showInternal(c,title,artist,false); }
+    public static void showTrack(Context c, TrackSnapshot track){
+        if(track==null){ hide(); return; }
+        showInternal(c, track.title, track.artist, track.albumArt, false);
+    }
+    public static void test(Context c){
+        Context app = c.getApplicationContext();
+        final String ft = "Очень длинное название тестовой песни, которое должно переноситься на следующую строку";
+        final String fa = "Исполнитель / Группа";
+        h.post(() -> showOrUpdateOnMain(app, ft, fa, null, true, TEST_DISPLAY_MS, true));
+    }
+
+    private static void showInternal(Context raw,String title,String artist,boolean test){
+        showInternal(raw, title, artist, null, test);
+    }
+
+    private static void showInternal(Context raw,String title,String artist,Bitmap albumArt,boolean test){
+        Context c=raw.getApplicationContext();
+        if(!canDraw(c))return;
+        String t=clean(title);
+        String a=clean(artist);
+        if(t.isEmpty()&&a.isEmpty()&&!test)return;
+        if(t.isEmpty())t="Неизвестный трек";
+        final String ft=t, fa=a;
+        final Bitmap cover = albumArt;
+        h.post(() -> showOrUpdateOnMain(c, ft, fa, cover, test, test ? TEST_DISPLAY_MS : -1, test));
+    }
+
+    private static String clean(String s){
+        if(s==null)return "";
+        s=s.replace("\n"," ").replace("\r"," ").trim();
+        while(s.contains("  "))s=s.replace("  "," ");
+        if(s.equalsIgnoreCase("null"))return "";
+        return s;
+    }
+
+    private static String format(String title,String artist){
+        if(artist!=null&&!artist.trim().isEmpty())return artist.trim()+" - "+title.trim();
+        return title.trim();
+    }
+
+    private static void showOrUpdateOnMain(Context c,String title,String artist,Bitmap albumArt,boolean forceRestartTimer,int overrideHideMs,boolean testMode){
+        if (isTestModeActive() && !testMode) return;
+        Prefs p=new Prefs(c);
+        if(wm==null)wm=(WindowManager)c.getSystemService(Context.WINDOW_SERVICE);
+        if(wm==null)return;
+        boolean wasVisible = panelView != null && panelView.getVisibility() == LinearLayout.VISIBLE;
+        String nextText = format(title,artist);
+        boolean sameTextAsRendered = nextText.equals(lastRenderedText);
+        boolean sameAlbumArt = sameBitmap(lastAlbumArt, albumArt);
+
+        boolean newlyCreated=false;
+        if(overlayView==null || panelView==null || lineView==null || contentRow==null){
+            createOverlayViews(c);
+            newlyCreated=true;
+        }
+
+        boolean controlsNeedUpdate = controlsVisible != p.featureControls();
+        boolean designChanged = lastDesign != p.designPreset();
+        boolean positionSettingsChanged = currentParams == null
+                || p.customPosition() != lastAppliedCustomPosition
+                || p.position() != lastAppliedPosition
+                || p.paddingX() != lastAppliedOffsetX
+                || p.paddingY() != lastAppliedOffsetY;
+
+        if (newlyCreated || currentParams == null || positionSettingsChanged) {
+            currentParams = params(c, p);
+            lastAppliedCustomPosition = p.customPosition();
+            lastAppliedPosition = p.position();
+            lastAppliedOffsetX = p.paddingX();
+            lastAppliedOffsetY = p.paddingY();
+        }
+
+        String text=nextText;
+        if (testMode) {
+            testModeUntilAt = SystemClock.uptimeMillis() + Math.max(500, overrideHideMs);
+        } else if (!isTestModeActive()) {
+            testModeUntilAt = 0L;
+        }
+        contentSoftHidden = false;
+        h.removeCallbacks(collapseHiddenHostTask);
+        panelView.setVisibility(LinearLayout.VISIBLE);
+        panelView.setAlpha(1f);
+        setOverlayTouchThrough(false);
+        setOverlayCollapsedFootprint(false);
+        applyAlbumArt(c, p, albumArt);
+        applyStyle(p);
+        if(controlsNeedUpdate || designChanged) updateControlsVisibility(c,p);
+        else if(p.featureControls()) {
+            controlsRow.setVisibility(LinearLayout.VISIBLE);
+            applyControlsLayout(c,p);
+        } else if (controlsRow != null) {
+            controlsRow.setVisibility(LinearLayout.GONE);
+        }
+        if(!text.equals(lastRenderedText)){
+            applyTrackText(p, title, artist);
+            lastRenderedText=text;
+        } else {
+            applyTrackText(p, title, artist);
+        }
+        applySmartTextLayout(c,p,text);
+
+        try{
+            if(newlyCreated || !hostAttached){
+                wm.addView(overlayView,currentParams);
+                hostAttached = true;
+            }else{
+                wm.updateViewLayout(overlayView,currentParams);
+            }
+        }catch(Exception e){
+            hardResetOverlay();
+            return;
+        }
+
+        lastTitle=title;
+        lastArtist=artist;
+        lastAlbumArt=albumArt;
+        if (forceRestartTimer) {
+            restartHideTimerForMs(Math.max(0, overrideHideMs));
+        } else if (!wasVisible || !sameTextAsRendered || !sameAlbumArt) {
+            restartHideTimer(p);
+        }
+    }
+
+    private static boolean isTestModeActive() {
+        return testModeUntilAt > SystemClock.uptimeMillis();
+    }
+
+    private static void createOverlayViews(Context c){
+        overlayView = new LinearLayout(c);
+        overlayView.setOrientation(LinearLayout.HORIZONTAL);
+        overlayView.setGravity(Gravity.CENTER_VERTICAL);
+        overlayView.setClipToPadding(false);
+        overlayView.setClipChildren(false);
+
+        panelView = new LinearLayout(c);
+        panelView.setOrientation(LinearLayout.VERTICAL);
+        panelView.setGravity(Gravity.CENTER);
+        panelView.setClipToPadding(false);
+        panelView.setClipChildren(false);
+        panelView.setVisibility(LinearLayout.GONE);
+        panelView.setOnTouchListener((v,e)->handleTouch(c,e));
+        overlayView.addView(panelView, new LinearLayout.LayoutParams(-2, -2));
+
+        contentRow = new LinearLayout(c);
+        contentRow.setOrientation(LinearLayout.HORIZONTAL);
+        contentRow.setGravity(Gravity.CENTER_VERTICAL);
+        contentRow.setClipToPadding(false);
+        contentRow.setClipChildren(false);
+        panelView.addView(contentRow,new LinearLayout.LayoutParams(-1,-2));
+
+        albumArtView = new ImageView(c);
+        albumArtView.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        albumArtView.setVisibility(ImageView.GONE);
+        contentRow.addView(albumArtView, new LinearLayout.LayoutParams(0, 0));
+
+        lineView=new TextView(c);
+        lineView.setTypeface(Typeface.DEFAULT,Typeface.BOLD);
+        lineView.getPaint().setFakeBoldText(true);
+        lineView.setGravity(Gravity.CENTER);
+        lineView.setHorizontallyScrolling(false);
+        contentRow.addView(lineView,new LinearLayout.LayoutParams(-2,-2));
+
+        controlsRow=new LinearLayout(c);
+        controlsRow.setOrientation(LinearLayout.HORIZONTAL);
+        controlsRow.setGravity(Gravity.CENTER);
+        controlsRow.setClipToPadding(false);
+        controlsRow.setClipChildren(false);
+        controlsRow.setPadding(0, Ui.dp(c, 2), 0, Ui.dp(c, 8));
+        addControlButton(c, controlsRow, "⏮", KeyEvent.KEYCODE_MEDIA_PREVIOUS);
+        addControlButton(c, controlsRow, "⏯", KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE);
+        addControlButton(c, controlsRow, "⏭", KeyEvent.KEYCODE_MEDIA_NEXT);
+        panelView.addView(controlsRow,new LinearLayout.LayoutParams(-1,-2));
+        controlsVisible = true; // updateControlsVisibility выставит верное значение
+        lastDesign = -1;
+    }
+
+    private static void applyAlbumArt(Context c, Prefs p, Bitmap albumArt){
+        if(contentRow==null || albumArtView==null || lineView==null)return;
+        boolean showCover = p.featureAlbumArt() && albumArt != null && !albumArt.isRecycled();
+        contentRow.setGravity(showCover ? Gravity.CENTER_VERTICAL : Gravity.CENTER);
+        lineView.setGravity(showCover ? Gravity.START : Gravity.CENTER);
+        if(showCover){
+            int textSize = Math.max(1, p.textSize());
+            int artDp = Math.max(44, Math.min(92, Math.round(textSize * 2.15f)));
+            int artPx = Ui.dp(c, artDp);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(artPx, artPx);
+            lp.setMargins(0, 0, Ui.dp(c, Math.max(10, Math.min(18, Math.round(textSize * 0.42f)))), 0);
+            albumArtView.setLayoutParams(lp);
+            albumArtView.setImageBitmap(albumArt);
+            int radius = Math.max(12, Math.min(22, Math.round(textSize * 0.55f)));
+            albumArtView.setBackground(Ui.stroke(0x22141B2A, 1, 0x44FFFFFF, radius, c));
+            albumArtView.setClipToOutline(true);
+            albumArtView.setAlpha(1f);
+            albumArtView.setVisibility(ImageView.VISIBLE);
+        } else {
+            albumArtView.setImageDrawable(null);
+            albumArtView.setAlpha(1f);
+            albumArtView.setVisibility(ImageView.GONE);
+            albumArtView.setLayoutParams(new LinearLayout.LayoutParams(0, 0));
+        }
+    }
+
+    private static void addControlButton(Context c, LinearLayout row, String text, int keyCode){
+        TextView b=new TextView(c);
+        b.setText(text);
+        b.setTypeface(Typeface.DEFAULT,Typeface.BOLD);
+        b.setGravity(Gravity.CENTER);
+        b.setTextColor(0xFFFFFFFF);
+        b.setIncludeFontPadding(false);
+        b.setOnClickListener(v -> sendMediaKey(c,keyCode));
+        row.addView(b);
+    }
+
+    /** Подгоняет кнопки управления под текущий размер текста и делает ровные отступы сверху/снизу. */
+    private static void applyControlsLayout(Context c, Prefs p){
+        if(controlsRow==null)return;
+        int textSize=Math.max(1,p.textSize());
+        int buttonDp=Math.max(38, Math.min(62, Math.round(textSize * 1.66f)));
+        int iconSp=Math.max(14, Math.min(28, Math.round(textSize * 0.78f)));
+        int sideMargin=Math.max(7, Math.min(12, Math.round(textSize * 0.34f)));
+        int verticalGap=Math.max(8, Math.min(18, Math.round(textSize * 0.45f)));
+        int buttonPx=Ui.dp(c,buttonDp);
+        int accent=p.controlsBorderColor();
+
+        controlsRow.setGravity(Gravity.CENTER);
+        controlsRow.setPadding(0, Ui.dp(c, verticalGap), 0, Ui.dp(c, verticalGap));
+        for(int i=0;i<controlsRow.getChildCount();i++){
+            TextView b=(TextView)controlsRow.getChildAt(i);
+            b.setTextSize(iconSp);
+            b.setIncludeFontPadding(false);
+            b.setGravity(Gravity.CENTER);
+            LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(buttonPx,buttonPx);
+            lp.setMargins(Ui.dp(c,sideMargin),0,Ui.dp(c,sideMargin),0);
+            b.setLayoutParams(lp);
+        }
+        applyControlButtonVisuals(c, p, buttonDp, accent);
+    }
+
+    private static void sendMediaKey(Context c,int keyCode){
+        try{
+            AudioManager am=(AudioManager)c.getApplicationContext().getSystemService(Context.AUDIO_SERVICE);
+            if(am==null)return;
+            long now=SystemClock.uptimeMillis();
+            am.dispatchMediaKeyEvent(new KeyEvent(now,now,KeyEvent.ACTION_DOWN,keyCode,0));
+            am.dispatchMediaKeyEvent(new KeyEvent(now,now,KeyEvent.ACTION_UP,keyCode,0));
+        }catch(Throwable ignored){}
+    }
+
+    private static void applyStyle(Prefs p){
+        if(panelView==null || lineView==null || contentRow==null)return;
+        int design=p.designPreset();
+        int bg=p.bgColor();
+        int stroke=p.borderColor();
+        int strokeWidth=Math.max(0,p.borderWidth());
+        int corner=p.corner();
+        int px=20;
+        int py=14;
+        int textColor=p.titleColor();
+        int textSize=p.textSize();
+        float letterSpacing = 0f;
+        int effectiveStroke = stroke;
+        int effectiveStrokeWidth = strokeWidth;
+
+        if(design==1){ // Minimal
+            bg=0xE6070A10; effectiveStroke=(stroke & 0x00FFFFFF) | 0x33000000; effectiveStrokeWidth=Math.max(0, strokeWidth - 1);
+            corner=Math.max(8,corner/2); px=Math.max(10,px-7); py=Math.max(6,py-6); letterSpacing=0.02f;
+        }else if(design==2){ // Glass
+            bg=0x99233142; effectiveStroke=0xA6E7F6FF; effectiveStrokeWidth=Math.max(1, strokeWidth + 1);
+            corner=Math.max(26,corner+6); px=Math.max(26,px+10); py=Math.max(16,py+3); textColor=0xFFF8FCFF;
+        }else if(design==3){ // Car UI
+            bg=0xF0060C14; effectiveStroke=0xFF00D5FF; effectiveStrokeWidth=Math.max(2, strokeWidth + 2);
+            corner=Math.max(14,corner); px=Math.max(26,px+6); py=Math.max(14,py); textColor=0xFFFFFFFF; letterSpacing=0.03f;
+        }else if(design==4){ // Soft
+            bg=0xF0243146; effectiveStroke=0x88D8E5F7; effectiveStrokeWidth=Math.max(1, strokeWidth + 1);
+            corner=Math.max(26,corner+8); px=Math.max(24,px+8); py=Math.max(16,py+3); textColor=0xFFF7FAFF;
+        }else if(design==5){ // Contrast
+            bg=0xFA020304; effectiveStroke=0xFFF8FAFC; effectiveStrokeWidth=Math.max(3, strokeWidth + 2);
+            corner=Math.max(10,corner-3); px=Math.max(18,px); py=Math.max(12,py-1); textColor=0xFFFFFFFF; letterSpacing=0.01f;
+        }else if(design==6){ // Capsule
+            bg=0xF0131B2C; effectiveStroke=0xFF95B8FF; effectiveStrokeWidth=Math.max(2, strokeWidth + 1);
+            corner=Math.max(38,corner+18); px=Math.max(30,px+14); py=Math.max(11,py-3); textColor=0xFFF5F7FB; letterSpacing=0.02f;
+        }else if(design==7){ // Premium
+            bg=0xF0181A20; effectiveStroke=0xFFD9C27A; effectiveStrokeWidth=Math.max(2, strokeWidth + 1);
+            corner=Math.max(18,corner+2); px=Math.max(28,px+10); py=Math.max(18,py+4); textColor=0xFFFFF6DD; letterSpacing=0.025f;
+        }else if(design==8){ // Spikes
+            bg=0xF0121622; effectiveStroke=0xFFFF6B6B; effectiveStrokeWidth=Math.max(2, strokeWidth + 1);
+            corner=Math.max(12,corner); px=Math.max(24,px+6); py=Math.max(18,py+4); textColor=0xFFFFF1F1; letterSpacing=0.03f;
+        }else if(design==9){ // Orbit
+            bg=0xEE111A2B; effectiveStroke=0xFF8BE9FD; effectiveStrokeWidth=Math.max(2, strokeWidth + 1);
+            corner=Math.max(40,corner+22); px=Math.max(34,px+18); py=Math.max(26,py+12); textColor=0xFFF4FBFF; letterSpacing=0.03f;
+        }
+
+        Ui.pad(panelView,px,py,px,py);
+        applyPanelBackground(panelView.getContext(), bg, effectiveStrokeWidth, effectiveStroke, corner, effectiveWindowAlphaPercent(p), design);
+        panelView.setAlpha(1f);
+        lineView.setTextSize(textSize);
+        lineView.setTypeface(OverlayFonts.resolve(panelView.getContext(), p.textFont(), p.textBold()));
+        lineView.getPaint().setFakeBoldText(p.textBold());
+        lineView.setLetterSpacing(letterSpacing);
+        applyPresetTextEffects(p, design, textColor);
+        applyTrackText(p, lastTitle, lastArtist);
+        boolean coverVisible = albumArtView != null && albumArtView.getVisibility() == ImageView.VISIBLE;
+        lineView.setGravity(coverVisible ? Gravity.START : Gravity.CENTER);
+        lineView.setIncludeFontPadding(true);
+        applyAlbumArtFrameStyle(panelView.getContext(), design, textSize, effectiveStroke);
+        if(coverVisible){
+            lineView.setLineSpacing(Ui.dp(panelView.getContext(), Math.max(1, Math.min(8, Math.round(textSize * 0.14f)))), 1.0f);
+            int contentMinHeight = Ui.dp(panelView.getContext(), Math.max(34, Math.min(108, Math.round(textSize * 2.6f))));
+            contentRow.setMinimumHeight(contentMinHeight);
+            int verticalInset = Ui.dp(panelView.getContext(), Math.max(0, Math.min(6, Math.round(textSize * 0.12f))));
+            contentRow.setPadding(0, verticalInset, 0, verticalInset);
+        }else{
+            lineView.setLineSpacing(0f, 1.0f);
+            contentRow.setMinimumHeight(0);
+            contentRow.setPadding(0, 0, 0, 0);
+        }
+        lastDesign=design;
+    }
+
+    private static void applyPresetTextEffects(Prefs p, int design, int textColor){
+        if(lineView==null)return;
+        lineView.setShadowLayer(0f, 0f, 0f, 0);
+        if (!p.textShadow()) return;
+        if(design==2){ // Glass
+            lineView.setShadowLayer(12f, 0f, 1.5f, 0x88E7F6FF);
+        }else if(design==3){ // Car UI
+            lineView.setShadowLayer(10f, 0f, 1.5f, 0x9900D5FF);
+        }else if(design==4){ // Soft
+            lineView.setShadowLayer(8f, 0f, 2f, 0x66263245);
+        }else if(design==5){ // Contrast
+            lineView.setShadowLayer(12f, 0f, 2.5f, 0xDD000000);
+        }else if(design==6){ // Capsule
+            lineView.setShadowLayer(10f, 0f, 1.5f, 0x8895B8FF);
+        }else if(design==7){ // Premium
+            lineView.setShadowLayer(11f, 0f, 1.5f, 0x99D9C27A);
+        }else if(design==8){ // Spikes
+            lineView.setShadowLayer(10f, 0f, 1.5f, 0x88FF6B6B);
+        }else if(design==9){ // Orbit
+            lineView.setShadowLayer(12f, 0f, 1.5f, 0x888BE9FD);
+        }else if(design==1){ // Minimal
+            lineView.setShadowLayer(6f, 0f, 1.5f, 0x66000000);
+        }else{
+            lineView.setShadowLayer(8f, 0f, 2f, 0xAA000000);
+        }
+    }
+
+    private static void applyAlbumArtFrameStyle(Context c, int design, int textSize, int strokeColor){
+        if(albumArtView==null || albumArtView.getVisibility()!=ImageView.VISIBLE)return;
+        int radius = Math.max(12, Math.min(24, Math.round(textSize * 0.55f)));
+        int bg = 0x22141B2A;
+        int stroke = 0x44FFFFFF;
+        int width = 1;
+        if(design==1){
+            bg = 0x14000000;
+            stroke = 0x22000000;
+            width = 0;
+        }else if(design==2){
+            bg = 0x33DDEEFF;
+            stroke = 0x99F2FBFF;
+            width = 2;
+            radius += 4;
+        }else if(design==3){
+            bg = 0x2200D5FF;
+            stroke = 0xFF00D5FF;
+            width = 2;
+        }else if(design==4){
+            bg = 0x33EAF2FF;
+            stroke = 0x88D8E5F7;
+            width = 1;
+            radius += 3;
+        }else if(design==5){
+            bg = 0x22000000;
+            stroke = 0xFFF8FAFC;
+            width = 2;
+        }else if(design==6){
+            bg = 0x225E7EC0;
+            stroke = 0xFF95B8FF;
+            width = 2;
+            radius += 8;
+        }else if(design==7){
+            bg = 0x22D9C27A;
+            stroke = 0xFFD9C27A;
+            width = 2;
+            radius += 2;
+        }else if(design==8){
+            bg = 0x22FF6B6B;
+            stroke = 0xFFFF6B6B;
+            width = 2;
+            radius += 4;
+        }else if(design==9){
+            bg = 0x228BE9FD;
+            stroke = 0xFF8BE9FD;
+            width = 2;
+            radius += 8;
+        }else{
+            stroke = (strokeColor & 0x00FFFFFF) | 0x66FFFFFF;
+        }
+        albumArtView.setBackground(Ui.stroke(bg, width, stroke, radius, c));
+    }
+
+    private static void applyControlButtonVisuals(Context c, Prefs p, int buttonDp, int accent){
+        if(controlsRow==null)return;
+        int design = p.designPreset();
+        int fill = 0x331E293B;
+        int stroke = accent;
+        int width = 1;
+        int radius = buttonDp / 2;
+        int text = 0xFFFFFFFF;
+        float shadow = 0f;
+        int shadowColor = 0;
+        if(design==1){
+            fill = 0x14070A10;
+            stroke = 0x33000000;
+            width = 0;
+            radius = Math.max(Ui.dp(c, 10), buttonDp / 3);
+            text = 0xFFE2E8F0;
+        }else if(design==2){
+            fill = 0x33E7F6FF;
+            stroke = 0xAAE7F6FF;
+            width = 2;
+            radius = Math.max(Ui.dp(c, 16), buttonDp / 2);
+            text = 0xFFFFFFFF;
+            shadow = 8f;
+            shadowColor = 0x66E7F6FF;
+        }else if(design==3){
+            fill = 0x2600D5FF;
+            stroke = 0xFF00D5FF;
+            width = 2;
+            radius = Math.max(Ui.dp(c, 14), buttonDp / 2);
+            shadow = 7f;
+            shadowColor = 0x7700D5FF;
+        }else if(design==4){
+            fill = 0x33E8EEF8;
+            stroke = 0x88D8E5F7;
+            width = 1;
+            radius = Math.max(Ui.dp(c, 18), buttonDp / 2);
+            text = 0xFFF8FBFF;
+        }else if(design==5){
+            fill = 0xFF040607;
+            stroke = 0xFFF8FAFC;
+            width = 2;
+            radius = Math.max(Ui.dp(c, 12), buttonDp / 3);
+            shadow = 6f;
+            shadowColor = 0xCC000000;
+        }else if(design==6){
+            fill = 0x335E7EC0;
+            stroke = 0xFF95B8FF;
+            width = 2;
+            radius = buttonDp / 2;
+            shadow = 7f;
+            shadowColor = 0x6695B8FF;
+        }else if(design==7){
+            fill = 0x33D9C27A;
+            stroke = 0xFFD9C27A;
+            width = 2;
+            radius = Math.max(Ui.dp(c, 14), buttonDp / 2);
+            text = 0xFFFFF6DD;
+            shadow = 7f;
+            shadowColor = 0x77D9C27A;
+        }else if(design==8){
+            fill = 0x33FF6B6B;
+            stroke = 0xFFFF6B6B;
+            width = 2;
+            radius = Math.max(Ui.dp(c, 10), buttonDp / 3);
+            text = 0xFFFFF2F2;
+            shadow = 7f;
+            shadowColor = 0x66FF6B6B;
+        }else if(design==9){
+            fill = 0x338BE9FD;
+            stroke = 0xFF8BE9FD;
+            width = 2;
+            radius = buttonDp / 2;
+            text = 0xFFF4FBFF;
+            shadow = 8f;
+            shadowColor = 0x668BE9FD;
+        }
+        for(int i=0;i<controlsRow.getChildCount();i++){
+            TextView b=(TextView)controlsRow.getChildAt(i);
+            b.setTextColor(text);
+            b.setBackground(Ui.stroke(fill, width, stroke, radius, c));
+            b.setShadowLayer(shadow, 0f, 0f, shadowColor);
+        }
+    }
+
+    private static void updateControlsVisibility(Context c, Prefs p){
+        if(controlsRow==null)return;
+        controlsVisible=p.featureControls();
+        controlsRow.setVisibility(controlsVisible?LinearLayout.VISIBLE:LinearLayout.GONE);
+        if(controlsVisible) applyControlsLayout(c,p);
+    }
+
+    private static void restartHideTimer(Prefs prefs){
+        h.removeCallbacks(hideTask);
+        h.removeCallbacks(testHideTask);
+        if (prefs != null && prefs.displayWhilePlaying()) return;
+        int ms = prefs != null ? prefs.displayMs() : 0;
+        if(ms>0)h.postDelayed(hideTask,ms);
+    }
+
+    private static void restartHideTimerForMs(int ms){
+        h.removeCallbacks(hideTask);
+        h.removeCallbacks(testHideTask);
+        if(ms>0) h.postDelayed(testHideTask, ms);
+    }
+
+    private static void applySmartTextLayout(Context c, Prefs p, String text){
+        if(lineView==null || currentParams==null)return;
+
+        DisplayMetrics dm=getRealDisplayMetrics(c);
+        int screenWidth=Math.max(dm.widthPixels, Ui.dp(c,320));
+        int screenHeight=Math.max(dm.heightPixels, Ui.dp(c,320));
+        boolean landscape=screenWidth>screenHeight;
+
+        int edgeMargin=Ui.dp(c, landscape ? 12 : 16);
+        int maxWindowWidth=Math.max(Ui.dp(c,220), screenWidth - edgeMargin * 2);
+        int minWindowWidth=Ui.dp(c,150);
+        int horizontalPadding=Math.max(0,p.paddingX()*2);
+        int measureSafety=Ui.dp(c,18);
+        boolean coverVisible = albumArtView != null && albumArtView.getVisibility() == ImageView.VISIBLE;
+        boolean fixedWindow = p.featureFixedWindow();
+        int artWidth = coverVisible && albumArtView.getLayoutParams() != null ? albumArtView.getLayoutParams().width : 0;
+        int artGap = coverVisible ? Ui.dp(c, Math.max(10, Math.min(18, Math.round(Math.max(1, p.textSize()) * 0.42f)))) : 0;
+        int maxTextWidth=Math.max(Ui.dp(c,80), maxWindowWidth - horizontalPadding - measureSafety - artWidth - artGap);
+
+        String safeText=text==null?"":text.trim();
+        float measuredTextWidth=lineView.getPaint().measureText(safeText);
+        boolean fitsOneLine=measuredTextWidth<=maxTextWidth;
+        int targetWidth;
+        int maxLines = landscape ? 2 : 3;
+
+        lineView.setMinWidth(0);
+        cancelMarquee();
+        lineView.setScrollX(0);
+        lineView.setHorizontallyScrolling(fixedWindow);
+        lineView.setGravity((coverVisible || fixedWindow) ? Gravity.START : Gravity.CENTER);
+        lineView.setIncludeFontPadding(true);
+        lineView.setBreakStrategy(android.text.Layout.BREAK_STRATEGY_HIGH_QUALITY);
+        lineView.setHyphenationFrequency(android.text.Layout.HYPHENATION_FREQUENCY_NONE);
+
+        if(fixedWindow){
+            float widthFactor = landscape ? (coverVisible ? 0.74f : 0.68f) : (coverVisible ? 0.86f : 0.78f);
+            int defaultWidth = Math.max(minWindowWidth, Math.min(maxWindowWidth, Math.round(maxWindowWidth * widthFactor)));
+            int savedWidth = p.fixedWindowWidth();
+            targetWidth = Math.max(minWindowWidth, Math.min(maxWindowWidth, savedWidth > 0 ? savedWidth : defaultWidth));
+            lineView.setSingleLine(true);
+            lineView.setMaxLines(1);
+            lineView.setEllipsize(null);
+            lineView.setMarqueeRepeatLimit(0);
+        } else if(fitsOneLine){
+            lineView.setHorizontallyScrolling(false);
+            lineView.setSingleLine(true);
+            lineView.setMaxLines(1);
+            lineView.setEllipsize(null);
+            lineView.setMarqueeRepeatLimit(0);
+            targetWidth=(int)Math.ceil(measuredTextWidth)+horizontalPadding+measureSafety+artWidth+artGap;
+            targetWidth=Math.max(minWindowWidth, Math.min(maxWindowWidth, targetWidth));
+        }else{
+            lineView.setHorizontallyScrolling(false);
+            lineView.setSingleLine(false);
+            lineView.setMaxLines(maxLines);
+            lineView.setEllipsize(TextUtils.TruncateAt.END);
+            lineView.setMarqueeRepeatLimit(0);
+            targetWidth=maxWindowWidth;
+        }
+
+        if(p.featureControls()){
+            int buttonDp=Math.max(38, Math.min(62, Math.round(Math.max(1,p.textSize()) * 1.66f)));
+            int controlSideMargin=Math.max(7, Math.min(12, Math.round(Math.max(1,p.textSize()) * 0.34f)));
+            targetWidth=Math.max(targetWidth, Ui.dp(c, buttonDp*3 + controlSideMargin*6 + 24));
+        }
+        currentParams.width=targetWidth;
+        currentParams.height=WindowManager.LayoutParams.WRAP_CONTENT;
+
+        try{
+            overlayView.setMinimumWidth(0);
+            panelView.setMinimumWidth(0);
+            panelView.setMinimumWidth(targetWidth);
+            int textWidth = Math.max(Ui.dp(c,80), targetWidth - horizontalPadding - artWidth - artGap);
+            LinearLayout.LayoutParams textLp = (LinearLayout.LayoutParams) lineView.getLayoutParams();
+            if(textLp == null){
+                textLp = new LinearLayout.LayoutParams(textWidth, -2);
+            }else{
+                textLp.width = textWidth;
+                textLp.height = -2;
+                textLp.weight = 0f;
+            }
+            lineView.setLayoutParams(textLp);
+            lineView.setMaxWidth(textWidth);
+            lineView.setMinWidth(0);
+            lineView.setMinimumWidth(0);
+            panelView.requestLayout();
+            overlayView.requestLayout();
+            if (fixedWindow) {
+                applyFixedWindowTextBehavior(textWidth, measuredTextWidth);
+            } else {
+                lineView.setGravity(coverVisible ? Gravity.START : Gravity.CENTER);
+            }
+        }catch(Exception ignored){}
+
+        keepWindowInsideScreen(c, screenWidth, screenHeight, targetWidth);
+    }
+
+    private static void applyFixedWindowTextBehavior(int textWidth, float measuredTextWidth){
+        if(lineView==null)return;
+        int overflow = Math.max(0, (int) Math.ceil(measuredTextWidth - textWidth));
+        if(overflow <= 0){
+            lineView.setGravity(Gravity.CENTER);
+            lineView.setScrollX(0);
+            return;
+        }
+        lineView.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+        lineView.setScrollX(0);
+        lineView.post(() -> startMarquee(overflow));
+    }
+
+    private static void startMarquee(int overflow){
+        if(lineView==null || overflow <= 0)return;
+        cancelMarquee();
+        marqueeAnimator = ObjectAnimator.ofInt(lineView, "scrollX", 0, overflow);
+        marqueeAnimator.setDuration(Math.max(3200L, overflow * 22L));
+        marqueeAnimator.setStartDelay(700L);
+        marqueeAnimator.setRepeatCount(ObjectAnimator.INFINITE);
+        marqueeAnimator.setRepeatMode(ObjectAnimator.REVERSE);
+        marqueeAnimator.setInterpolator(new LinearInterpolator());
+        marqueeAnimator.start();
+    }
+
+    private static void cancelMarquee(){
+        if(marqueeAnimator!=null){
+            marqueeAnimator.cancel();
+            marqueeAnimator = null;
+        }
+    }
+
+    private static void showEditMode(Context c){
+        if(fixedWindowEditMode)return;
+        fixedWindowEditMode = true;
+        try{
+            if(panelView!=null){
+                Prefs prefs = new Prefs(c);
+                applyPanelBackground(c, prefs.bgColor(), 2, 0xAAFFFFFF, Math.max(8, prefs.corner()), prefs.windowAlpha(), prefs.designPreset());
+            }
+        }catch(Exception ignored){}
+        refresh(c);
+        keepEditModeAlive();
+    }
+
+    private static float getHorizontalSpan(MotionEvent e){
+        if(e.getPointerCount() < 2)return 0f;
+        float min = e.getX(0);
+        float max = min;
+        for(int i=1;i<e.getPointerCount();i++){
+            float x = e.getX(i);
+            if(x < min) min = x;
+            if(x > max) max = x;
+        }
+        return Math.abs(max - min);
+    }
+
+    private static boolean beginPinchResize(Context c, MotionEvent e, Prefs prefs){
+        if(!prefs.featureFixedWindow() || overlayView==null || currentParams==null || e.getPointerCount() < 2) return false;
+        cancelLongPressTask();
+        showEditMode(c);
+        resizingFixedWindow = true;
+        dragging = false;
+        dragArmed = false;
+        pinchStartSpanX = Math.max(1f, getHorizontalSpan(e));
+        int fallbackWidth = panelView != null && panelView.getWidth() > 0 ? panelView.getWidth() : currentParams.width;
+        pinchStartWidth = prefs.fixedWindowWidth() > 0 ? prefs.fixedWindowWidth() : Math.max(Ui.dp(c, 150), fallbackWidth);
+        try { panelView.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK); } catch (Throwable ignored) {}
+        keepEditModeAlive();
+        return true;
+    }
+
+    private static boolean updatePinchResize(Context c, MotionEvent e){
+        if(!resizingFixedWindow || currentParams==null || wm==null) return false;
+        Prefs prefs = new Prefs(c);
+        DisplayMetrics dm = getRealDisplayMetrics(c);
+        int screenWidth = Math.max(dm.widthPixels, Ui.dp(c,320));
+        int safe = Ui.dp(c,8);
+        int minWidth = Ui.dp(c,150);
+        int maxWidth = Math.max(minWidth, screenWidth - safe * 2);
+        float span = Math.max(1f, getHorizontalSpan(e));
+        int newWidth = Math.round(pinchStartWidth * (span / Math.max(1f, pinchStartSpanX)));
+        newWidth = Math.max(minWidth, Math.min(maxWidth, newWidth));
+        if(newWidth == prefs.fixedWindowWidth() || newWidth == currentParams.width){
+            keepEditModeAlive();
+            return true;
+        }
+        int currentWidth = currentParams.width > 0 ? currentParams.width : pinchStartWidth;
+        int anchorCenter = currentParams.x + currentWidth / 2;
+        currentParams.gravity = Gravity.TOP | Gravity.START;
+        currentParams.width = newWidth;
+        currentParams.x = anchorCenter - newWidth / 2;
+        currentParams.x = Math.max(safe, Math.min(currentParams.x, screenWidth - newWidth - safe));
+        prefs.setFixedWindowWidth(newWidth);
+        prefs.setOverlayPosition(currentParams.x, currentParams.y);
+        lastAppliedCustomPosition = true;
+        applySmartTextLayout(c, prefs, lastRenderedText);
+        try{ wm.updateViewLayout(overlayView, currentParams); }catch(Exception ignored){}
+        keepEditModeAlive();
+        return true;
+    }
+
+    private static void finishPinchResize(Context c){
+        if(!resizingFixedWindow)return;
+        resizingFixedWindow = false;
+        pinchStartSpanX = 0f;
+        pinchStartWidth = 0;
+        keepEditModeAlive();
+        restartHideTimer(new Prefs(c));
+    }
+
+    private static void keepEditModeAlive(){
+        h.removeCallbacks(hideEditModeTask);
+        h.postDelayed(hideEditModeTask, EDIT_MODE_TIMEOUT_MS);
+    }
+
+    private static void hideEditModeOnMain(){
+        if(!fixedWindowEditMode)return;
+        fixedWindowEditMode = false;
+        if(panelView!=null){
+            try{
+                Context c = panelView.getContext().getApplicationContext();
+                Prefs p = new Prefs(c);
+                applyStyle(p);
+                applySmartTextLayout(c, p, lastRenderedText);
+                if(wm!=null && currentParams!=null) wm.updateViewLayout(overlayView, currentParams);
+            }catch(Exception ignored){}
+        }
+    }
+
+    private static void keepWindowInsideScreen(Context c,int screenWidth,int screenHeight,int targetWidth){
+        if(currentParams==null)return;
+        int safe=Ui.dp(c,8);
+        int targetHeight=(overlayView!=null && overlayView.getHeight()>0)?overlayView.getHeight():Ui.dp(c,96);
+        if((currentParams.gravity & Gravity.START)==Gravity.START){
+            int maxX=Math.max(safe,screenWidth-targetWidth-safe);
+            currentParams.x=Math.max(safe,Math.min(currentParams.x,maxX));
+        }
+        if((currentParams.gravity & Gravity.TOP)==Gravity.TOP){
+            int maxY=Math.max(safe,screenHeight-targetHeight-safe);
+            currentParams.y=Math.max(safe,Math.min(currentParams.y,maxY));
+        }
+    }
+
+    private static DisplayMetrics getRealDisplayMetrics(Context c){
+        DisplayMetrics out=new DisplayMetrics();
+        DisplayMetrics res=c.getResources().getDisplayMetrics();
+        out.density=res.density;
+        out.scaledDensity=res.scaledDensity;
+        int rw=res.widthPixels;
+        int rh=res.heightPixels;
+        try{
+            if(wm!=null && Build.VERSION.SDK_INT>=30){
+                WindowMetrics metrics=wm.getCurrentWindowMetrics();
+                Rect b=metrics.getBounds();
+                if(b.width()>0 && b.height()>0){ rw=b.width(); rh=b.height(); }
+            }
+        }catch(Exception ignored){}
+        try{
+            if(wm!=null && (rw<=0 || rh<=0)){
+                Display d=wm.getDefaultDisplay();
+                if(d!=null){ Point size=new Point(); d.getRealSize(size); if(size.x>0 && size.y>0){ rw=size.x; rh=size.y; } }
+            }
+        }catch(Exception ignored){}
+        try{
+            int orientation=c.getResources().getConfiguration().orientation;
+            if(orientation==Configuration.ORIENTATION_PORTRAIT && rw>rh){ int tmp=rw; rw=rh; rh=tmp; }
+            else if(orientation==Configuration.ORIENTATION_LANDSCAPE && rh>rw){ int tmp=rw; rw=rh; rh=tmp; }
+        }catch(Exception ignored){}
+        out.widthPixels=Math.max(rw,Ui.dp(c,320));
+        out.heightPixels=Math.max(rh,Ui.dp(c,320));
+        return out;
+    }
+
+    private static boolean handleTouch(Context c, MotionEvent e){
+        if(panelView==null || currentParams==null || wm==null || contentSoftHidden) return false;
+        switch(e.getActionMasked()){
+            case MotionEvent.ACTION_DOWN:
+                h.removeCallbacks(hideTask);
+                if(fixedWindowEditMode) keepEditModeAlive();
+                cancelLongPressTask();
+                int[] location = new int[2];
+                try { panelView.getLocationOnScreen(location); } catch (Throwable ignored) { location[0]=currentParams.x; location[1]=currentParams.y; }
+                downX=location[0];
+                downY=location[1];
+                downGravity=currentParams.gravity;
+                touchX=e.getRawX();
+                touchY=e.getRawY();
+                dragging=false;
+                dragArmed=false;
+                longPressTriggered=false;
+                pendingLongPressTask = () -> {
+                    Prefs lpPrefs = new Prefs(c);
+                    if(lpPrefs.featureFixedWindow()) showEditMode(c);
+                    dragArmed = true;
+                    longPressTriggered = true;
+                    try { panelView.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS); } catch (Throwable ignored) {}
+                };
+                h.postDelayed(pendingLongPressTask, ViewConfiguration.getLongPressTimeout());
+                return true;
+
+            case MotionEvent.ACTION_POINTER_DOWN:
+                if(beginPinchResize(c, e, new Prefs(c))) return true;
+                return true;
+
+            case MotionEvent.ACTION_MOVE:
+                if(resizingFixedWindow && e.getPointerCount() >= 2){
+                    return updatePinchResize(c, e);
+                }
+                float moveDx=e.getRawX()-touchX;
+                float moveDy=e.getRawY()-touchY;
+                boolean movedEnough=Math.abs(moveDx)>TAP_SLOP_PX || Math.abs(moveDy)>TAP_SLOP_PX;
+                if(!dragArmed){
+                    if(movedEnough) cancelLongPressTask();
+                    return true;
+                }
+                int nx=downX+(int)moveDx;
+                int ny=downY+(int)moveDy;
+                dragging=true;
+                if(fixedWindowEditMode) keepEditModeAlive();
+                currentParams.gravity=Gravity.TOP|Gravity.START;
+                currentParams.x=Math.max(0,nx);
+                currentParams.y=Math.max(0,ny);
+                try{wm.updateViewLayout(overlayView,currentParams);}catch(Exception ignored){}
+                return true;
+
+            case MotionEvent.ACTION_POINTER_UP:
+                if(resizingFixedWindow){
+                    finishPinchResize(c);
+                    return true;
+                }
+                return true;
+
+            case MotionEvent.ACTION_UP:
+            case MotionEvent.ACTION_CANCEL:
+                if(resizingFixedWindow) finishPinchResize(c);
+                cancelLongPressTask();
+                long now=SystemClock.uptimeMillis();
+                float dx=e.getRawX()-touchX;
+                float dy=e.getRawY()-touchY;
+                boolean smallMove=Math.abs(dx)<=TAP_SLOP_PX && Math.abs(dy)<=TAP_SLOP_PX;
+
+                Prefs touchPrefs=new Prefs(c);
+                boolean horizontalSwipe=Math.abs(dx)>=Ui.dp(c,70) && Math.abs(dx)>Math.abs(dy)*1.55f;
+                if(touchPrefs.featureSwipeTracks() && horizontalSwipe && !longPressTriggered){
+                    // Fast swipe must not move the overlay; dragging is allowed only after long press.
+                    sendMediaKey(c, dx>0 ? KeyEvent.KEYCODE_MEDIA_NEXT : KeyEvent.KEYCODE_MEDIA_PREVIOUS);
+                    lastTapUpMs=0L;
+                } else if(!dragging && smallMove && now-lastTapUpMs<=DOUBLE_TAP_MS){
+                    resetToSelectedPreset(c);
+                    lastTapUpMs=0L;
+                } else {
+                    if(!dragging && smallMove) lastTapUpMs=now;
+                    if(dragging) {
+                        if(touchPrefs.featureSnap()) snapToNearestZone(c);
+                        touchPrefs.setOverlayPosition(currentParams.x,currentParams.y);
+                        lastAppliedCustomPosition=true;
+                        if(fixedWindowEditMode) keepEditModeAlive();
+                    }
+                }
+                restartHideTimer(touchPrefs);
+                dragging=false;
+                dragArmed=false;
+                longPressTriggered=false;
+                return true;
+        }
+        return false;
+    }
+
+    private static void cancelLongPressTask(){
+        if(pendingLongPressTask!=null){
+            h.removeCallbacks(pendingLongPressTask);
+            pendingLongPressTask=null;
+        }
+    }
+
+    private static void snapToNearestZone(Context c){
+        if(currentParams==null)return;
+        DisplayMetrics dm=getRealDisplayMetrics(c);
+        int screenW=Math.max(dm.widthPixels,Ui.dp(c,320));
+        int screenH=Math.max(dm.heightPixels,Ui.dp(c,320));
+        int safe=Ui.dp(c,12);
+        int width=currentParams.width>0?currentParams.width:Math.max(Ui.dp(c,220), overlayView!=null?overlayView.getWidth():Ui.dp(c,260));
+        int height=(overlayView!=null && overlayView.getHeight()>0)?overlayView.getHeight():Ui.dp(c,96);
+        width=Math.min(width, Math.max(Ui.dp(c,160), screenW-safe*2));
+        height=Math.min(height, Math.max(Ui.dp(c,64), screenH-safe*2));
+
+        int left=safe;
+        int centerX=Math.max(safe,(screenW-width)/2);
+        int right=Math.max(safe,screenW-width-safe);
+        int top=safe+Ui.dp(c,8);
+        int centerY=Math.max(safe,(screenH-height)/2);
+        int bottom=Math.max(safe,screenH-height-safe-Ui.dp(c,8));
+
+        int[] xs=new int[]{left,centerX,right};
+        int[] ys=new int[]{top,centerY,bottom};
+        int currentCenterX=currentParams.x+width/2;
+        int currentCenterY=currentParams.y+height/2;
+        int bestX=centerX,bestY=top;
+        long best=Long.MAX_VALUE;
+        for(int sx:xs){
+            for(int sy:ys){
+                int cx=sx+width/2;
+                int cy=sy+height/2;
+                long dx=cx-currentCenterX;
+                long dy=cy-currentCenterY;
+                long dist=dx*dx+dy*dy;
+                if(dist<best){ best=dist; bestX=sx; bestY=sy; }
+            }
+        }
+        currentParams.gravity=Gravity.TOP|Gravity.START;
+        currentParams.x=Math.max(safe,Math.min(bestX,screenW-width-safe));
+        currentParams.y=Math.max(safe,Math.min(bestY,screenH-height-safe));
+        try{wm.updateViewLayout(overlayView,currentParams);}catch(Exception ignored){}
+    }
+
+    private static void resetToSelectedPreset(Context c){
+        Prefs p=new Prefs(c);
+        p.resetOverlayPositionToPreset();
+        currentParams=params(c,p);
+        lastAppliedCustomPosition=p.customPosition();
+        lastAppliedPosition=p.position();
+        if(overlayView!=null && wm!=null){ try{wm.updateViewLayout(overlayView,currentParams);}catch(Exception ignored){} }
+    }
+
+    private static WindowManager.LayoutParams params(Context c,Prefs p){
+        int type=Build.VERSION.SDK_INT>=26?WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY:WindowManager.LayoutParams.TYPE_PHONE;
+        WindowManager.LayoutParams lp=new WindowManager.LayoutParams(
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                type,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE|
+                        WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL|
+                        WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                PixelFormat.TRANSLUCENT);
+        int edgeX = Ui.dp(c, Math.max(0, p.paddingX()));
+        int edgeY = Ui.dp(c, Math.max(0, p.paddingY()));
+        int centerShiftX = Ui.dp(c, p.paddingX() - 20);
+        int centerShiftY = Ui.dp(c, p.paddingY() - 14);
+        if(p.customPosition()){ lp.gravity=Gravity.TOP|Gravity.START; lp.x=Math.max(0,p.overlayX()); lp.y=Math.max(0,p.overlayY()); return lp; }
+        int pos=p.position();
+        if(pos==0){lp.gravity=Gravity.TOP|Gravity.START;lp.x=edgeX;lp.y=edgeY;}
+        else if(pos==2){lp.gravity=Gravity.TOP|Gravity.END;lp.x=edgeX;lp.y=edgeY;}
+        else if(pos==3){lp.gravity=Gravity.CENTER;lp.x=centerShiftX;lp.y=centerShiftY;}
+        else if(pos==4){lp.gravity=Gravity.BOTTOM|Gravity.START;lp.x=edgeX;lp.y=edgeY;}
+        else if(pos==5){lp.gravity=Gravity.BOTTOM|Gravity.CENTER_HORIZONTAL;lp.x=centerShiftX;lp.y=edgeY;}
+        else if(pos==6){lp.gravity=Gravity.BOTTOM|Gravity.END;lp.x=edgeX;lp.y=edgeY;}
+        else {lp.gravity=Gravity.TOP|Gravity.CENTER_HORIZONTAL;lp.x=centerShiftX;lp.y=edgeY;}
+        return lp;
+    }
+
+    public static void dimTemporarily(Context raw){
+        Context c=raw.getApplicationContext();
+        if(!new Prefs(c).featureVolumeDim())return;
+        h.post(() -> {
+        if(panelView==null)return;
+        try{
+            Prefs prefs = new Prefs(c);
+            int basePercent = Math.max(15, Math.min(100, prefs.windowAlpha()));
+            int dimPercent = Math.max(12, Math.round(basePercent * 0.35f));
+            volumeDimUntilAt = SystemClock.uptimeMillis() + 900L;
+            applyPanelBackgroundAlpha(dimPercent);
+            applyContentDimAlpha(0.38f);
+        }catch(Exception ignored){}
+            h.removeCallbacks(undimTask);
+            h.postDelayed(undimTask,900);
+        });
+    }
+
+    private static void restoreAlphaOnMain(){
+        if(panelView==null)return;
+        volumeDimUntilAt = 0L;
+        try{
+            applyPanelBackgroundAlpha(Math.max(15,Math.min(100,new Prefs(panelView.getContext()).windowAlpha())));
+            applyContentDimAlpha(1f);
+        }catch(Exception ignored){}
+    }
+
+    private static int effectiveWindowAlphaPercent(Prefs prefs) {
+        int basePercent = Math.max(15, Math.min(100, prefs.windowAlpha()));
+        if (volumeDimUntilAt > SystemClock.uptimeMillis()) {
+            return Math.max(12, Math.round(basePercent * 0.35f));
+        }
+        return basePercent;
+    }
+
+    private static void applyPanelBackground(Context c, int bgColor, int strokeWidth, int strokeColor, int corner, int alphaPercent, int design) {
+        if (panelView == null) return;
+        Drawable drawable;
+        if (design == 2) {
+            drawable = new OverlayShapeDrawable(bgColor, strokeColor, Ui.dp(c, corner), Ui.dp(c, strokeWidth), OverlayShapeDrawable.STYLE_WAVE);
+        } else if (design == 3) {
+            drawable = new OverlayShapeDrawable(bgColor, strokeColor, Ui.dp(c, corner), Ui.dp(c, strokeWidth), OverlayShapeDrawable.STYLE_TECH);
+        } else if (design == 8) {
+            drawable = new OverlayShapeDrawable(bgColor, strokeColor, Ui.dp(c, corner), Ui.dp(c, strokeWidth), OverlayShapeDrawable.STYLE_SPIKES);
+        } else if (design == 9) {
+            drawable = new OverlayShapeDrawable(bgColor, strokeColor, Ui.dp(c, corner), Ui.dp(c, strokeWidth), OverlayShapeDrawable.STYLE_OVAL);
+        } else if (design == 7) {
+            drawable = new OverlayShapeDrawable(bgColor, strokeColor, Ui.dp(c, corner), Ui.dp(c, strokeWidth), OverlayShapeDrawable.STYLE_PREMIUM);
+        } else {
+            drawable = Ui.stroke(bgColor, strokeWidth, strokeColor, corner, c);
+        }
+        drawable.mutate().setAlpha(windowPercentToDrawableAlpha(alphaPercent));
+        panelView.setBackground(drawable);
+    }
+
+    private static void applyPanelBackgroundAlpha(int alphaPercent) {
+        if (panelView == null) return;
+        Drawable bg = panelView.getBackground();
+        if (bg == null) return;
+        bg.mutate().setAlpha(windowPercentToDrawableAlpha(alphaPercent));
+        panelView.invalidate();
+    }
+
+    private static void applyContentDimAlpha(float alpha) {
+        if (lineView != null) lineView.setAlpha(alpha);
+        if (albumArtView != null) albumArtView.setAlpha(albumArtView.getVisibility() == ImageView.VISIBLE ? alpha : 0f);
+        if (controlsRow != null) controlsRow.setAlpha(alpha);
+    }
+
+    private static int windowPercentToDrawableAlpha(int alphaPercent) {
+        int clamped = Math.max(0, Math.min(100, alphaPercent));
+        return Math.round(255f * (clamped / 100f));
+    }
+
+    private static boolean sameBitmap(Bitmap a, Bitmap b) {
+        if (a == b) return true;
+        if (a == null || b == null) return false;
+        return a.getWidth() == b.getWidth() && a.getHeight() == b.getHeight();
+    }
+
+    public static void refresh(Context c){
+        if(overlayView==null && lineView==null)return;
+        Context app=c.getApplicationContext();
+        boolean testMode=isTestModeActive();
+        h.post(() -> showOrUpdateOnMain(app,lastTitle,lastArtist,lastAlbumArt,false,testMode?TEST_DISPLAY_MS:-1,testMode));
+    }
+    public static void hide(){ h.post(TrackOverlayManager::hideByEngineOnMain); }
+    public static void hideNow(){ h.post(TrackOverlayManager::hideNowRespectingTestModeOnMain); }
+    public static void hideNowForce(){ h.post(TrackOverlayManager::hardResetOverlay); }
+    public static void markRestoreRequired(){ h.post(() -> {
+        lastRenderedText = "";
+        lastAlbumArt = null;
+    }); }
+
+    private static void hideByEngineOnMain() {
+        if (isTestModeActive()) return;
+        hideOnMain();
+    }
+
+    private static void hideNowRespectingTestModeOnMain() {
+        if (isTestModeActive()) return;
+        hardResetOverlay();
+    }
+
+    private static void hideOnMain(){
+        h.removeCallbacks(hideTask);
+        h.removeCallbacks(testHideTask);
+        h.removeCallbacks(undimTask);
+        h.removeCallbacks(hideEditModeTask);
+        h.removeCallbacks(collapseHiddenHostTask);
+        cancelLongPressTask();
+        hideContentOnMain();
+    }
+
+    private static void hideTestOnMain() {
+        testModeUntilAt = 0L;
+        hideOnMain();
+    }
+
+    private static void removeOldViewSafely(){
+        if(overlayView==null || wm==null)return;
+        overlayView.setOnTouchListener(null);
+        try{ wm.removeViewImmediate(overlayView); }
+        catch(Exception ignored){ try{ wm.removeView(overlayView); }catch(Exception ignored2){} }
+        hostAttached = false;
+    }
+
+    private static void hideContentOnMain() {
+        cancelMarquee();
+        fixedWindowEditMode = false;
+        resizingFixedWindow = false;
+        pinchStartSpanX = 0f;
+        pinchStartWidth = 0;
+        dragging = false;
+        dragArmed = false;
+        longPressTriggered = false;
+        pendingLongPressTask = null;
+        if (albumArtView != null) {
+            albumArtView.setImageDrawable(null);
+            albumArtView.setAlpha(0f);
+            albumArtView.setVisibility(ImageView.GONE);
+        }
+        if (lineView != null) {
+            lineView.setText("");
+            lineView.setScrollX(0);
+        }
+        if (contentRow != null) {
+            contentRow.setMinimumHeight(0);
+            contentRow.setPadding(0, 0, 0, 0);
+        }
+        if (controlsRow != null) {
+            controlsRow.setVisibility(LinearLayout.GONE);
+        }
+        if (panelView != null) {
+            contentSoftHidden = true;
+            panelView.setVisibility(LinearLayout.VISIBLE);
+            panelView.setAlpha(0f);
+        }
+        setOverlayTouchThrough(true);
+        h.removeCallbacks(collapseHiddenHostTask);
+        h.postDelayed(collapseHiddenHostTask, HIDDEN_HOST_COLLAPSE_DELAY_MS);
+        lastRenderedText = "";
+        lastAlbumArt = null;
+    }
+
+    private static void collapseHiddenHostOnMain() {
+        if (!contentSoftHidden) return;
+        setOverlayCollapsedFootprint(true);
+    }
+
+    private static void setOverlayTouchThrough(boolean enabled) {
+        if (currentParams == null) return;
+        int oldFlags = currentParams.flags;
+        if (enabled) {
+            currentParams.flags = currentParams.flags | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
+        } else {
+            currentParams.flags = currentParams.flags & ~WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
+        }
+        if (oldFlags != currentParams.flags && hostAttached && overlayView != null && wm != null) {
+            try { wm.updateViewLayout(overlayView, currentParams); } catch (Exception ignored) {}
+        }
+    }
+
+    private static void setOverlayCollapsedFootprint(boolean collapsed) {
+        if (currentParams == null) return;
+        int targetWidth = collapsed ? 1 : WindowManager.LayoutParams.WRAP_CONTENT;
+        int targetHeight = collapsed ? 1 : WindowManager.LayoutParams.WRAP_CONTENT;
+        boolean changed = currentParams.width != targetWidth || currentParams.height != targetHeight;
+        currentParams.width = targetWidth;
+        currentParams.height = targetHeight;
+        if (collapsed) {
+            try {
+                if (overlayView != null) overlayView.setMinimumWidth(0);
+                if (panelView != null) {
+                    panelView.setMinimumWidth(0);
+                    panelView.setMinimumHeight(0);
+                }
+            } catch (Exception ignored) {}
+        }
+        if (changed && hostAttached && overlayView != null && wm != null) {
+            try { wm.updateViewLayout(overlayView, currentParams); } catch (Exception ignored) {}
+        }
+    }
+
+    private static void clearOverlayState() {
+        h.removeCallbacks(collapseHiddenHostTask);
+        cancelMarquee();
+        fixedWindowEditMode = false;
+        resizingFixedWindow = false;
+        pinchStartSpanX = 0f;
+        pinchStartWidth = 0;
+        if (controlsRow != null) {
+            controlsRow.removeAllViews();
+        }
+        if (albumArtView != null) {
+            albumArtView.setImageDrawable(null);
+        }
+        if (lineView != null) {
+            lineView.setText("");
+        }
+        if (panelView != null) {
+            panelView.setOnTouchListener(null);
+        }
+        if (overlayView != null) {
+            overlayView.removeAllViews();
+        }
+        overlayView = null;
+        panelView = null;
+        contentRow = null;
+        albumArtView = null;
+        lineView = null;
+        controlsRow = null;
+        wm = null;
+        currentParams = null;
+        hostAttached = false;
+        contentSoftHidden = false;
+        lastRenderedText = "";
+        lastTitle = "";
+        lastArtist = "";
+        lastAlbumArt = null;
+        lastAppliedPosition = -1;
+        lastAppliedCustomPosition = false;
+        lastAppliedOffsetX = -1;
+        lastAppliedOffsetY = -1;
+        controlsVisible = false;
+        lastDesign = -1;
+        testModeUntilAt = 0L;
+        downX = 0;
+        downY = 0;
+        downGravity = 0;
+        touchX = 0f;
+        touchY = 0f;
+        dragging = false;
+        dragArmed = false;
+        longPressTriggered = false;
+        pendingLongPressTask = null;
+        lastTapUpMs = 0L;
+    }
+
+    private static void hardResetOverlay() {
+        removeOldViewSafely();
+        clearOverlayState();
+    }
+
+    private static void applyTrackText(Prefs p, String title, String artist) {
+        if (lineView == null) return;
+        String safeTitle = clean(title);
+        String safeArtist = clean(artist);
+        if (safeTitle.isEmpty()) safeTitle = "Неизвестный трек";
+        if (safeArtist.isEmpty()) {
+            lineView.setTextColor(p.titleColor());
+            lineView.setText(safeTitle);
+            return;
+        }
+        String separator = " - ";
+        SpannableStringBuilder sb = new SpannableStringBuilder();
+        int artistStart = 0;
+        sb.append(safeArtist);
+        int artistEnd = sb.length();
+        sb.append(separator);
+        int titleStart = sb.length();
+        sb.append(safeTitle);
+        int titleEnd = sb.length();
+        sb.setSpan(new ForegroundColorSpan(p.artistColor()), artistStart, artistEnd, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        sb.setSpan(new ForegroundColorSpan(p.titleColor()), titleStart, titleEnd, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        lineView.setText(sb);
+    }
+}
