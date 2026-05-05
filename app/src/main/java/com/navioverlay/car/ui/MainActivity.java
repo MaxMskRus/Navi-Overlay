@@ -373,7 +373,7 @@ public class MainActivity extends Activity {
         switchRow(box, tr("Жирный шрифт", "Bold text"), prefs.textBold(), on -> { prefs.setTextBold(on); TrackOverlayManager.refresh(this); });
         switchRow(box, tr("Тень текста", "Text shadow"), prefs.textShadow(), on -> { prefs.setTextShadow(on); TrackOverlayManager.refresh(this); });
         box.addView(menuButton(tr("Шрифт окна", "Window font"), tr("Выбор шрифта из набора образцов", "Pick a font from preview samples"), v -> showFontDialog()), smallGapLp());
-        box.addView(primaryButton(tr("Проверить окно", "Preview window"), v -> TrackOverlayManager.test(this)), btnLp());
+        box.addView(previewButton(tr("Проверить окно", "Preview window"), v -> TrackOverlayManager.test(this)), btnLp());
 
         outer.addView(secondaryButton(tr("Готово", "Done"), v -> dialog.dismiss()), btnLp());
         dialog.show();
@@ -405,7 +405,7 @@ public class MainActivity extends Activity {
         addSeek(box, tr("Время показа, сек. 0 = не скрывать", "Display time, sec. 0 = do not hide"), 0, 10, prefs.displayMs() / 1000, v -> { prefs.setDisplayMs(v * 1000); TrackOverlayManager.refresh(this); });
         box.addView(menuButton(tr("Положение окна", "Window position"), tr("Выбор одного из стандартных положений окна", "Choose one of the standard window positions"), v -> showPositionDialog()), smallGapLp());
         box.addView(menuButton(tr("Пресет дизайна", "Design preset"), tr("Готовые стили формы и оформления overlay", "Ready-made overlay shape and style presets"), v -> showDesignPresetDialog()), smallGapLp());
-        box.addView(primaryButton(tr("Проверить окно", "Preview window"), v -> TrackOverlayManager.test(this)), btnLp());
+        box.addView(previewButton(tr("Проверить окно", "Preview window"), v -> TrackOverlayManager.test(this)), btnLp());
 
         outer.addView(secondaryButton(tr("Готово", "Done"), v -> dialog.dismiss()), btnLp());
         dialog.show();
@@ -433,7 +433,7 @@ public class MainActivity extends Activity {
         box.addView(menuButton(tr("Цвет рамок кнопок", "Control border color"), tr("Палитра для кнопок ⏮ ⏯ ⏭", "Palette for ⏮ ⏯ ⏭ buttons"), v -> showBorderColorDialog(true)), smallGapLp());
         box.addView(menuButton(tr("Цвет исполнителя", "Artist color"), tr("Отдельный цвет для исполнителя", "Separate color for artist text"), v -> showColorDialog(1)), smallGapLp());
         box.addView(menuButton(tr("Цвет названия песни", "Track title color"), tr("Отдельный цвет для названия песни", "Separate color for song title"), v -> showColorDialog(2)), smallGapLp());
-        box.addView(primaryButton(tr("Проверить окно", "Preview window"), v -> TrackOverlayManager.test(this)), btnLp());
+        box.addView(previewButton(tr("Проверить окно", "Preview window"), v -> TrackOverlayManager.test(this)), btnLp());
 
         outer.addView(secondaryButton(tr("Готово", "Done"), v -> dialog.dismiss()), btnLp());
         dialog.show();
@@ -476,7 +476,7 @@ public class MainActivity extends Activity {
             prefs.setDisplayWhilePlaying(on);
             TrackOverlayManager.refresh(this);
         });
-        box.addView(primaryButton(tr("Проверить окно", "Preview window"), v -> TrackOverlayManager.test(this)), btnLp());
+        box.addView(previewButton(tr("Проверить окно", "Preview window"), v -> TrackOverlayManager.test(this)), btnLp());
 
         outer.addView(secondaryButton(tr("Готово", "Done"), v -> dialog.dismiss()), btnLp());
         dialog.show();
@@ -715,7 +715,7 @@ public class MainActivity extends Activity {
             box.addView(rb, smallGapLp());
         }
 
-        box.addView(primaryButton(tr("Проверить окно", "Preview window"), v -> TrackOverlayManager.test(this)), btnLp());
+        box.addView(previewButton(tr("Проверить окно", "Preview window"), v -> TrackOverlayManager.test(this)), btnLp());
         outer.addView(secondaryButton(tr("Готово", "Done"), v -> dialog.dismiss()), btnLp());
         dialog.show();
         fitDialog(dialog, true);
@@ -770,7 +770,7 @@ public class MainActivity extends Activity {
             box.addView(rb, smallGapLp());
         }
 
-        box.addView(primaryButton(tr("Проверить окно", "Preview window"), v -> TrackOverlayManager.test(this)), btnLp());
+        box.addView(previewButton(tr("Проверить окно", "Preview window"), v -> TrackOverlayManager.test(this)), btnLp());
         outer.addView(secondaryButton(tr("Готово", "Done"), v -> dialog.dismiss()), btnLp());
         dialog.show();
         fitDialog(dialog, true);
@@ -1006,6 +1006,18 @@ public class MainActivity extends Activity {
         b.setTextColor(Color.WHITE);
         b.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         b.setBackground(gradientButton(prefs.accentColor(), lighten(prefs.accentColor(), 30), 18));
+        if (l != null) b.setOnClickListener(l);
+        return b;
+    }
+
+    private Button previewButton(String text, View.OnClickListener l) {
+        Button b = new Button(this);
+        b.setText(text);
+        b.setAllCaps(false);
+        b.setTextSize(15);
+        b.setTextColor(Color.WHITE);
+        b.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        b.setBackground(gradientButton(0xFF2DDFFF, 0xFFC85BFF, 18));
         if (l != null) b.setOnClickListener(l);
         return b;
     }
