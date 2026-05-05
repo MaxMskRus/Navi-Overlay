@@ -1,0 +1,9 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Latest Release
+    url: https://github.com/MaxMskRus/Navi-Overlay/releases/latest
+    about: Download the latest APK before reporting a problem.
+  - name: README
+    url: https://github.com/MaxMskRus/Navi-Overlay#english
+    about: Check the main documentation and feature overview first.
+
