@@ -1,215 +1,183 @@
 # Navi Overlay
 
 [![Release](https://img.shields.io/github/v/release/MaxMskRus/Navi-Overlay?display_name=tag&sort=semver)](https://github.com/MaxMskRus/Navi-Overlay/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/MaxMskRus/Navi-Overlay/total)](https://github.com/MaxMskRus/Navi-Overlay/releases/latest)
 [![Platform](https://img.shields.io/badge/platform-Android-3DDC84?logo=android&logoColor=white)](https://github.com/MaxMskRus/Navi-Overlay)
-[![APK](https://img.shields.io/badge/download-latest%20APK-00D5FF)](https://github.com/MaxMskRus/Navi-Overlay/releases/latest)
+[![Latest APK](https://img.shields.io/badge/APK-latest-00D5FF)](https://github.com/MaxMskRus/Navi-Overlay/releases/latest)
+[![Language](https://img.shields.io/badge/UI-RU%20%2F%20EN-7C3AED)](https://github.com/MaxMskRus/Navi-Overlay)
 
-**Navi Overlay** is an Android app that shows the current music track in a floating overlay window above your navigator or any other selected app.  
-It can also work **without navigation** as a compact now-playing popup with track controls.
+**Navi Overlay** is a floating Android music popup designed for navigation apps, car head units, tablets, and phones.  
+It shows the current track in a compact overlay window and can also work **without navigation** as a standalone now-playing popup with quick media controls.
 
 <p>
-  <a href="#english">English</a> |
-  <a href="#русский">Русский</a>
+  <a href="#english">🇬🇧 English</a> |
+  <a href="#русский">🇷🇺 Русский</a>
 </p>
 
 ---
 
 ## English
 
-### What It Does
+### ✨ Overview
 
-Navi Overlay places a customizable track popup on top of your navigation app or any selected screen.  
-It is designed for car head units, tablets, and phones where you want to:
+Navi Overlay displays the current song in a floating overlay window above:
 
-- see the current song without leaving the map;
-- switch tracks directly from the overlay;
-- keep a fixed or adaptive popup style;
-- use the app with navigation apps **or** as a standalone floating music popup.
+- navigation apps;
+- selected apps;
+- or even without navigation in **floating mode**.
 
-### Key Features
+It is built for people who want music info and controls visible without constantly switching between the player and the map.
 
-- Floating track popup above selected apps
-- Optional floating mode without navigation
-- Music control buttons inside the overlay
-- Swipe left/right to switch tracks
-- Fixed window mode with manual two-finger width resize
-- Adaptive or fixed popup behavior
-- Album art support
-- Separate artist and title colors
-- Custom fonts
-- Text shadow and bold text mode
-- Border thickness and design presets
-- Auto-hide timer or always-visible mode
-- Hide overlay together with navigation
-- Volume-dim effect during volume changes
-- English / Russian UI
+### 🚗 Perfect For
 
-### Designed For
+- Android car head units
+- dashboard tablets
+- phones used with navigation
+- drivers who want quick track visibility with minimal distraction
 
-- car head units;
-- dashboard tablets;
-- phones used as music/navigation companions;
-- drivers who want quick music info and controls with minimal distraction.
+### 🔥 Key Features
 
-### Permissions
+- 🎵 floating track popup above selected apps
+- 🧭 navigation-aware display mode
+- 🌐 floating mode without navigation
+- ⏮ ⏯ ⏭ media control buttons inside the overlay
+- 👈 👉 swipe left/right to switch tracks
+- 🖼 album art support
+- 📐 fixed-width mode with two-finger resize
+- 🎨 deep customization for text, colors, borders, fonts, and presets
+- 🌙 auto-hide timer or always-visible mode
+- 🔉 optional volume-dim effect
+- 🌍 English and Russian UI
 
-Depending on your setup, the app may use:
-
-- **Draw over other apps** — to show the overlay
-- **Notification access** — to read music notifications / media sessions
-- **Accessibility** — to detect the active navigation app more accurately
-- **Usage access** — fallback active-app detection
-
-### Main Use Cases
+### 🧩 Main Use Cases
 
 #### 1. Navigation + Music
 
-Show the current track only above your selected navigation apps.
+Show the current track only above selected navigation apps.
 
 #### 2. Floating Music Popup
 
-Use Navi Overlay without navigation to display the current track as a lightweight floating now-playing window.
+Use Navi Overlay without navigation as a lightweight always-available now-playing popup.
 
 #### 3. Fixed Overlay Layout
 
-Lock the popup width and resize it manually with two fingers, like zooming an image.
+Lock the popup width and resize it with two fingers like zooming an image.
 
-### Installation
+### ⚙️ Settings Overview
+
+| Section | What You Can Configure |
+|---|---|
+| `Main` | Enable app, show only over selected apps, English UI |
+| `Apps` | Navigation apps and music players |
+| `Text settings` | Text size, font, bold text, text shadow |
+| `Window settings` | Transparency, corner radius, border width, offsets, display time, position, design preset |
+| `Color settings` | Window, border, control, artist, and title colors |
+| `Extra features` | Media buttons, swipe tracks, snap, volume dim, floating mode, album art, hide with navigation, fixed window, always show |
+
+### 🎨 Customization Highlights
+
+You can tune:
+
+- text size
+- font style
+- bold text
+- text shadow
+- window transparency
+- corner radius
+- border thickness
+- horizontal and vertical offsets
+- display duration
+- position preset
+- design preset
+- artist/title colors separately
+- control border colors
+
+### 🔐 Permissions
+
+Depending on your setup, Navi Overlay may use:
+
+- **Draw over other apps** — to display the floating window
+- **Notification access** — to read track data from media notifications
+- **Accessibility** — to detect the active navigation app more accurately
+- **Usage access** — fallback active-app detection on some devices
+
+### 📥 Installation
 
 1. Download the latest APK from the release page.
 2. Install it on your Android device.
 3. Grant the required permissions.
-4. Select your navigation apps and music apps.
+4. Select your navigation apps and music players.
 5. Customize the overlay and start using it.
 
-### Compatibility
+### 📦 Download
 
-Navi Overlay is intended for:
+➡️ **[Download Latest APK](https://github.com/MaxMskRus/Navi-Overlay/releases/latest)**
 
-- phones;
-- tablets;
-- Android-based car head units;
-- custom automotive Android firmware where overlay and notification access are available.
+### 🛠 Contributing
 
-### Settings Overview
-
-| Section | What You Can Configure |
-|---|---|
-| Main | Enable app, show only over selected apps, English UI |
-| Apps | Navigation apps and music players |
-| Text settings | Text size, font, bold text, text shadow |
-| Window settings | Transparency, corner radius, border width, offsets, display time, position, design preset |
-| Color settings | Window, border, controls, artist, title colors |
-| Extra features | Media buttons, swipe tracks, snap, volume dim, floating mode, album art, hide with navigation, fixed window, always show |
-
-### Customization
-
-You can customize:
-
-- text size;
-- font;
-- bold text;
-- text shadow;
-- window transparency;
-- corner radius;
-- border thickness;
-- horizontal / vertical offset;
-- display time;
-- position preset;
-- design preset;
-- window color;
-- border color;
-- control border color;
-- artist color;
-- title color.
-
-### Download
-
-Download the latest APK here:
-
-**[Latest Release](https://github.com/MaxMskRus/Navi-Overlay/releases/latest)**
-
-### Contributing
-
-Pull requests, bug reports, UX suggestions, and device compatibility feedback are welcome.  
+Bug reports, pull requests, compatibility notes, and UI/UX suggestions are welcome.  
 See [CONTRIBUTING.md](./CONTRIBUTING.md).
+
+### 🔒 Security
+
+If you found a security-sensitive issue, see [SECURITY.md](./SECURITY.md).
 
 ---
 
 ## Русский
 
-### Что делает приложение
+### ✨ Описание
 
-**Navi Overlay** показывает текущее название песни во всплывающем окне поверх навигатора или другого выбранного приложения.  
-Также приложение может работать **без навигатора** как удобное плавающее окно с отображением трека и кнопками управления музыкой.
+**Navi Overlay** показывает текущую песню во всплывающем окне поверх навигатора или другого выбранного приложения.  
+Также приложение может работать **без навигатора** как удобное плавающее окно с названием трека и кнопками управления музыкой.
 
-### Основные возможности
+### 🚗 Для кого подходит
 
-- Плавающее окно с названием трека поверх выбранных приложений
-- Работа без навигатора в режиме floating
-- Кнопки управления музыкой внутри окна
-- Свайп влево/вправо для переключения треков
-- Режим фиксированного размера окна
-- Обложка трека
-- Отдельные цвета для исполнителя и названия песни
-- Выбор шрифтов
-- Тень текста и жирный шрифт
-- Настройка толщины рамки и пресеты дизайна
-- Таймер скрытия или постоянный показ
-- Сворачивание окна вместе с навигацией
-- Приглушение окна во время изменения громкости
-- Интерфейс на русском и английском
-
-### Для чего подходит
-
-- для автомобильных магнитол;
+- для Android-магнитол;
 - для планшетов в машине;
-- для телефонов, где музыка и навигация используются одновременно;
-- для любого сценария, где нужно видеть текущий трек и быстро им управлять.
+- для телефонов, где одновременно используются музыка и навигация;
+- для любого сценария, где хочется быстро видеть текущий трек без лишних переключений.
 
-### Типовые сценарии
+### 🔥 Основные возможности
+
+- 🎵 плавающее окно с текущим треком
+- 🧭 показ поверх выбранных навигаторов
+- 🌐 работа без навигатора в floating-режиме
+- ⏮ ⏯ ⏭ кнопки управления музыкой в overlay
+- 👈 👉 свайп для переключения треков
+- 🖼 отображение обложки
+- 📐 режим фиксированного размера окна
+- 🎨 гибкая настройка текста, цветов, рамки и пресетов
+- 🌙 таймер скрытия или постоянный показ
+- 🔉 приглушение окна во время изменения громкости
+- 🌍 интерфейс на русском и английском
+
+### 🧩 Типовые сценарии
 
 #### 1. Музыка поверх навигатора
 
-Окно показывается только поверх выбранных навигационных приложений.
+Окно отображается только поверх выбранных навигационных приложений.
 
 #### 2. Работа без навигатора
 
-Можно использовать приложение как обычное плавающее окно с текущим треком и кнопками управления.
+Приложение можно использовать как обычное плавающее now-playing окно.
 
 #### 3. Фиксированное окно
 
 Ширину окна можно зафиксировать и менять двумя пальцами, как при увеличении или уменьшении изображения.
 
-### Установка
-
-1. Скачай последний APK со страницы релизов.
-2. Установи его на Android-устройство.
-3. Выдай нужные разрешения.
-4. Выбери навигаторы и музыкальные приложения.
-5. Настрой внешний вид окна и пользуйся.
-
-### Совместимость
-
-Navi Overlay рассчитан на:
-
-- телефоны;
-- планшеты;
-- Android-магнитолы;
-- кастомные автомобильные прошивки Android, где доступны overlay и доступ к уведомлениям.
-
-### Краткая карта настроек
+### ⚙️ Краткая карта настроек
 
 | Раздел | Что настраивается |
 |---|---|
-| Главное | Включение приложения, показ только поверх выбранных приложений, English UI |
-| Приложения | Навигаторы и музыкальные плееры |
-| Настройки текста | Размер текста, шрифт, жирный шрифт, тень текста |
-| Настройки окна | Прозрачность, скругление, толщина рамки, отступы, время показа, положение, пресет дизайна |
-| Настройки цвета | Цвет окна, рамки, кнопок, исполнителя, названия песни |
-| Дополнительные функции | Кнопки, свайп, магнит, приглушение, floating, обложка, сворачивание с навигацией, фиксированное окно, постоянный показ |
+| `Главное` | Включение приложения, показ только поверх выбранных приложений, English UI |
+| `Приложения` | Навигаторы и музыкальные плееры |
+| `Настройки текста` | Размер текста, шрифт, жирный шрифт, тень текста |
+| `Настройки окна` | Прозрачность, скругление, толщина рамки, отступы, время показа, положение, пресет дизайна |
+| `Настройки цвета` | Цвет окна, рамки, кнопок, исполнителя, названия песни |
+| `Дополнительные функции` | Кнопки, свайп, магнит, приглушение, floating, обложка, сворачивание с навигацией, фиксированное окно, постоянный показ |
 
-### Что можно настроить
+### 🎨 Что можно настроить
 
 - размер текста;
 - шрифт;
@@ -228,21 +196,31 @@ Navi Overlay рассчитан на:
 - цвет исполнителя;
 - цвет названия песни.
 
-### Разрешения
+### 🔐 Разрешения
 
-В зависимости от сценария приложение может использовать:
+В зависимости от режима работы приложение может использовать:
 
 - **Поверх других приложений**
 - **Доступ к уведомлениям**
 - **Специальные возможности**
 - **Историю использования**
 
-### Скачать APK
+### 📥 Установка
 
-Последнюю версию можно скачать здесь:
+1. Скачай последний APK со страницы релизов.
+2. Установи его на устройство Android.
+3. Выдай нужные разрешения.
+4. Выбери навигаторы и музыкальные приложения.
+5. Настрой внешний вид окна и начни пользоваться.
 
-**[Latest Release](https://github.com/MaxMskRus/Navi-Overlay/releases/latest)**
+### 📦 Скачать APK
 
-### Участие в проекте
+➡️ **[Скачать последнюю версию](https://github.com/MaxMskRus/Navi-Overlay/releases/latest)**
+
+### 🛠 Участие в проекте
 
 Если хочешь помочь с улучшением приложения, смотри [CONTRIBUTING.md](./CONTRIBUTING.md).
+
+### 🔒 Безопасность
+
+Если найдёшь потенциально чувствительную проблему, смотри [SECURITY.md](./SECURITY.md).
