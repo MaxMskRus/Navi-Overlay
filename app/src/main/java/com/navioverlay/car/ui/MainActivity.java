@@ -62,6 +62,9 @@ import java.util.Locale;
 import java.util.Set;
 
 public class MainActivity extends Activity {
+    private static final int APP_MODE_TRIGGERS = 0;
+    private static final int APP_MODE_PLAYERS = 1;
+    private static final int APP_MODE_CONFLICTS = 2;
     private static final int BG = 0xFF030712;
     private static final int BG_2 = 0xFF071021;
     private static final int CARD = 0xFF101827;
@@ -82,6 +85,7 @@ public class MainActivity extends Activity {
     private Switch enableSwitch;
     private Switch onlyTriggerSwitch;
     private Switch englishUiSwitch;
+    private ArrayList<AppInfo> installedAppsCache;
 
     @Override public void onCreate(Bundle b) {
         super.onCreate(b);
@@ -153,8 +157,12 @@ public class MainActivity extends Activity {
 
     private void addAppsCard() {
         LinearLayout c = card(tr("Приложения", "Apps"), tr("Выбор навигаторов и плееров вынесен в отдельные аккуратные списки.", "Choose navigation apps and music players in separate lists."));
-        c.addView(menuButton(tr("Приложения навигации", "Navigation apps"), tr("Где показывать окно", "Where the window may appear"), v -> showAppDialog(true)), smallGapLp());
-        c.addView(menuButton(tr("Аудио приложения", "Audio apps"), tr("Откуда брать название трека", "Where track data comes from"), v -> showAppDialog(false)), smallGapLp());
+        c.addView(menuButton(tr("Приложения навигации", "Navigation apps"), tr("Где показывать окно", "Where the window may appear"), v -> showAppDialog(APP_MODE_TRIGGERS)), smallGapLp());
+        c.addView(menuButton(tr("Аудио приложения", "Audio apps"), tr("Откуда брать название трека", "Where track data comes from"), v -> showAppDialog(APP_MODE_PLAYERS)), smallGapLp());
+        c.addView(menuButton(
+                tr("Приложения с приоритетным окном", "Priority overlay apps"),
+                tr("Антирадар и другие приложения, чьи собственные окна должны временно иметь приоритет", "Radar and similar apps whose own windows should temporarily take priority"),
+                v -> showConflictAppsDialog()), smallGapLp());
     }
 
     private void addSettingsCard() {
@@ -182,6 +190,8 @@ public class MainActivity extends Activity {
         }), smallGapLp());
         c.addView(menuButton(tr("Проверить и восстановить", "Check and recover"), tr("Откроет нужные настройки только если правда есть проблема", "Opens the needed settings only if there is a real problem"), v -> checkAndRecover()), smallGapLp());
         c.addView(menuButton(tr("Скопировать отчёт", "Copy report"), tr("Собрать статусы разрешений, навигатора и музыки", "Collect permission, navigator and music status"), v -> copyDiagnosticsReport()), smallGapLp());
+        c.addView(menuButton(tr("История последних треков", "Recent track history"), tr("Открыть список последних 30 треков и быстро копировать названия", "Open the latest 30 tracks and quickly copy song names"), v -> showRecentTrackHistoryDialog()), smallGapLp());
+        c.addView(menuButton(tr("Инструкция", "Instructions"), tr("Коротко о том, что делает каждая функция приложения", "Short guide explaining what each app function does"), v -> showInstructionsDialog()), smallGapLp());
     }
 
     private interface BoolCb { void set(boolean b); }
@@ -203,13 +213,29 @@ public class MainActivity extends Activity {
         return sw;
     }
 
-    private void showAppDialog(boolean triggers) {
+    private void showAppDialog(int mode) {
+        boolean triggers = mode == APP_MODE_TRIGGERS;
+        boolean players = mode == APP_MODE_PLAYERS;
         final Dialog dialog = fullDialog();
         LinearLayout box = dialogRoot();
         dialog.setContentView(box);
 
-        box.addView(tv(tr(triggers ? "Приложения навигации" : "Аудио приложения", triggers ? "Navigation apps" : "Audio apps"), 24, TEXT, Typeface.BOLD, Gravity.CENTER), matchWrap());
-        box.addView(tv(tr(triggers ? "Выбери приложения, поверх которых можно показывать окно." : "Выбери плееры, откуда брать название трека.", triggers ? "Choose apps over which the window may appear." : "Choose players used for track metadata."), 14, MUTED, Typeface.NORMAL, Gravity.CENTER), matchWrap());
+        box.addView(tv(tr(
+                mode == APP_MODE_TRIGGERS ? "Приложения навигации" : (players ? "Аудио приложения" : "Приложения с приоритетным окном"),
+                mode == APP_MODE_TRIGGERS ? "Navigation apps" : (players ? "Audio apps" : "Priority overlay apps")
+        ), 24, TEXT, Typeface.BOLD, Gravity.CENTER), matchWrap());
+        box.addView(tv(tr(
+                mode == APP_MODE_TRIGGERS
+                        ? "Выбери приложения, поверх которых можно показывать окно."
+                        : (players
+                            ? "Выбери плееры, откуда брать название трека."
+                            : "Выбери приложения, чьи собственные окна должны временно иметь приоритет над overlay."),
+                mode == APP_MODE_TRIGGERS
+                        ? "Choose apps over which the window may appear."
+                        : (players
+                            ? "Choose players used for track metadata."
+                            : "Choose apps whose own windows should temporarily take priority over the overlay.")
+        ), 14, MUTED, Typeface.NORMAL, Gravity.CENTER), matchWrap());
         space(box, 14);
 
         EditText search = new EditText(this);
@@ -227,8 +253,11 @@ public class MainActivity extends Activity {
         quick.setGravity(Gravity.CENTER);
         quick.setClipChildren(false);
         quick.setClipToPadding(false);
-        quick.setPadding(0, 0, 0, Ui.dp(this, 10));
-        quick.addView(secondaryButton(tr(triggers ? "Яндекс + карты" : "Популярные плееры", triggers ? "Yandex + maps" : "Popular players"), null), quickButtonLp(1));
+        quick.setPadding(0, 0, 0, Ui.dp(this, 2));
+        quick.addView(secondaryButton(tr(
+                mode == APP_MODE_TRIGGERS ? "Яндекс + карты" : (players ? "Популярные плееры" : "Полезные примеры"),
+                mode == APP_MODE_TRIGGERS ? "Yandex + maps" : (players ? "Popular players" : "Useful examples")
+        ), null), quickButtonLp(1));
         quick.addView(secondaryButton(tr("Очистить", "Clear"), null), quickButtonLp(1));
         Button popular = (Button) quick.getChildAt(0);
         Button clear = (Button) quick.getChildAt(1);
@@ -241,11 +270,12 @@ public class MainActivity extends Activity {
         clear.setMaxLines(1);
         clear.setSingleLine(true);
         LinearLayout.LayoutParams quickLp = smallGapLp();
-        quickLp.bottomMargin = Ui.dp(this, 14);
+        quickLp.bottomMargin = Ui.dp(this, 6);
         box.addView(quick, quickLp);
 
         LinearLayout manualRow = new LinearLayout(this);
         manualRow.setOrientation(LinearLayout.HORIZONTAL);
+        manualRow.setGravity(Gravity.CENTER_VERTICAL);
         EditText manualPackage = new EditText(this);
         manualPackage.setHint(tr("Добавить пакет вручную", "Add package manually"));
         manualPackage.setSingleLine(true);
@@ -256,8 +286,13 @@ public class MainActivity extends Activity {
         Ui.pad(manualPackage, 12, 10, 12, 10);
         manualRow.addView(manualPackage, new LinearLayout.LayoutParams(0, Ui.dp(this, 48), 1));
         Button addManual = secondaryButton(tr("Добавить", "Add"), null);
-        manualRow.addView(addManual, new LinearLayout.LayoutParams(Ui.dp(this, 112), Ui.dp(this, 48)));
-        box.addView(manualRow, smallGapLp());
+        LinearLayout.LayoutParams addManualLp = new LinearLayout.LayoutParams(Ui.dp(this, 112), Ui.dp(this, 48));
+        addManualLp.leftMargin = Ui.dp(this, 10);
+        manualRow.addView(addManual, addManualLp);
+        LinearLayout.LayoutParams manualRowLp = smallGapLp();
+        manualRowLp.topMargin = Ui.dp(this, 0);
+        manualRowLp.bottomMargin = Ui.dp(this, 8);
+        box.addView(manualRow, manualRowLp);
 
         ScrollView sv = new ScrollView(this);
         LinearLayout list = new LinearLayout(this);
@@ -269,29 +304,33 @@ public class MainActivity extends Activity {
         box.addView(done, btnLp());
 
         final Runnable[] render = new Runnable[1];
-        render[0] = () -> renderApps(list, search.getText().toString(), triggers);
+        render[0] = () -> renderApps(list, search.getText().toString(), mode);
         search.addTextChangedListener(new TextWatcher() {
             public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
             public void onTextChanged(CharSequence s, int start, int before, int count) { render[0].run(); }
             public void afterTextChanged(Editable s) {}
         });
         popular.setOnClickListener(v -> {
-            Set<String> s = triggers ? prefs.triggers() : prefs.players();
-            if (triggers) Collections.addAll(s, Constants.DEFAULT_TRIGGER_PACKAGES);
-            else Collections.addAll(s, Constants.DEFAULT_PLAYER_PACKAGES);
-            if (triggers) prefs.setTriggers(s); else prefs.setPlayers(s);
+            Set<String> s = mode == APP_MODE_TRIGGERS ? prefs.triggers() : (players ? prefs.players() : prefs.conflictApps());
+            if (mode == APP_MODE_TRIGGERS) Collections.addAll(s, Constants.DEFAULT_TRIGGER_PACKAGES);
+            else if (players) Collections.addAll(s, Constants.DEFAULT_PLAYER_PACKAGES);
+            else {
+                s.add("com.smart.driver.antiradar");
+                s.add("com.antiradar");
+            }
+            saveAppSelection(mode, s);
             render[0].run();
         });
-        clear.setOnClickListener(v -> { if (triggers) prefs.setTriggers(new HashSet<String>()); else prefs.setPlayers(new HashSet<String>()); render[0].run(); });
+        clear.setOnClickListener(v -> { saveAppSelection(mode, new HashSet<String>()); render[0].run(); });
         addManual.setOnClickListener(v -> {
             String pkg = manualPackage.getText().toString().trim();
             if (pkg.length() < 3 || !pkg.contains(".")) {
                 Toast.makeText(this, tr("Введите packageName, например ru.yandex.music", "Enter packageName, for example ru.yandex.music"), Toast.LENGTH_SHORT).show();
                 return;
             }
-            Set<String> s = triggers ? prefs.triggers() : prefs.players();
+            Set<String> s = mode == APP_MODE_TRIGGERS ? prefs.triggers() : (players ? prefs.players() : prefs.conflictApps());
             s.add(pkg);
-            if (triggers) prefs.setTriggers(s); else prefs.setPlayers(s);
+            saveAppSelection(mode, s);
             manualPackage.setText("");
             render[0].run();
         });
@@ -300,10 +339,10 @@ public class MainActivity extends Activity {
         fitDialog(dialog, true);
     }
 
-    private void renderApps(LinearLayout list, String q, boolean triggers) {
+    private void renderApps(LinearLayout list, String q, int mode) {
         list.removeAllViews();
         String query = q == null ? "" : q.trim().toLowerCase(Locale.ROOT);
-        Set<String> selected = triggers ? prefs.triggers() : prefs.players();
+        Set<String> selected = mode == APP_MODE_TRIGGERS ? prefs.triggers() : (mode == APP_MODE_PLAYERS ? prefs.players() : prefs.conflictApps());
         ArrayList<AppInfo> apps = loadApps(selected);
         int count = 0;
         for (AppInfo a : apps) {
@@ -319,9 +358,9 @@ public class MainActivity extends Activity {
             cb.setChecked(selected.contains(a.packageName));
             Ui.pad(cb, 12, 10, 12, 10);
             cb.setOnCheckedChangeListener((v, on) -> {
-                Set<String> s = triggers ? prefs.triggers() : prefs.players();
+                Set<String> s = mode == APP_MODE_TRIGGERS ? prefs.triggers() : (mode == APP_MODE_PLAYERS ? prefs.players() : prefs.conflictApps());
                 if (on) s.add(a.packageName); else s.remove(a.packageName);
-                if (triggers) prefs.setTriggers(s); else prefs.setPlayers(s);
+                saveAppSelection(mode, s);
             });
             list.addView(cb, smallGapLp());
             count++;
@@ -329,18 +368,140 @@ public class MainActivity extends Activity {
         if (count == 0) list.addView(tv(tr("Ничего не найдено", "Nothing found"), 15, MUTED, Typeface.NORMAL, Gravity.CENTER), btnLp());
     }
 
+    private void saveAppSelection(int mode, Set<String> values) {
+        if (mode == APP_MODE_TRIGGERS) prefs.setTriggers(values);
+        else if (mode == APP_MODE_PLAYERS) prefs.setPlayers(values);
+        else prefs.setConflictApps(values);
+    }
+
+    private void showConflictAppsDialog() {
+        showAppDialog(APP_MODE_CONFLICTS);
+    }
+
+    private void showRecentTrackHistoryDialog() {
+        final Dialog dialog = fullDialog();
+        LinearLayout outer = dialogRoot();
+        dialog.setContentView(outer);
+        outer.addView(tv(tr("История последних треков", "Recent track history"), 24, TEXT, Typeface.BOLD, Gravity.CENTER), matchWrap());
+        outer.addView(tv(tr("Последние 30 треков. Справа можно быстро скопировать название строки.", "Latest 30 tracks. Use the right-side button to quickly copy the full line."), 14, MUTED, Typeface.NORMAL, Gravity.CENTER), matchWrap());
+        space(outer, 12);
+
+        ScrollView sv = new ScrollView(this);
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        Ui.pad(box, 0, 0, 0, 18);
+        sv.addView(box, new ScrollView.LayoutParams(-1, -2));
+        outer.addView(sv, new LinearLayout.LayoutParams(-1, 0, 1));
+
+        List<Prefs.RecentTrack> tracks = prefs.recentTracks();
+        if (tracks.isEmpty()) {
+            box.addView(tv(tr("История пока пустая.", "History is empty for now."), 15, MUTED, Typeface.NORMAL, Gravity.CENTER), btnLp());
+        } else {
+            int shown = 0;
+            for (int i = tracks.size() - 1; i >= 0 && shown < 30; i--, shown++) {
+                Prefs.RecentTrack item = tracks.get(i);
+                LinearLayout row = new LinearLayout(this);
+                row.setOrientation(LinearLayout.HORIZONTAL);
+                row.setGravity(Gravity.CENTER_VERTICAL);
+                row.setBackground(Ui.stroke(CARD_2, 1, 0x223A4658, 16, this));
+                Ui.pad(row, 14, 12, 12, 12);
+
+                TextView text = tv((shown + 1) + ". " + item.display(), 15, TEXT, Typeface.NORMAL, Gravity.START);
+                text.setLineSpacing(Ui.dp(this, 2), 1.0f);
+                row.addView(text, new LinearLayout.LayoutParams(0, -2, 1));
+
+                Button copy = secondaryButton(tr("Копировать", "Copy"), v -> {
+                    ClipboardManager cm = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+                    if (cm != null) cm.setPrimaryClip(ClipData.newPlainText("track", item.display()));
+                    Toast.makeText(this, tr("Трек скопирован", "Track copied"), Toast.LENGTH_SHORT).show();
+                });
+                LinearLayout.LayoutParams copyLp = new LinearLayout.LayoutParams(Ui.dp(this, 112), Ui.dp(this, 42));
+                copyLp.leftMargin = Ui.dp(this, 10);
+                row.addView(copy, copyLp);
+                box.addView(row, smallGapLp());
+            }
+        }
+
+        outer.addView(secondaryButton(tr("Готово", "Done"), v -> dialog.dismiss()), btnLp());
+        dialog.show();
+        fitDialog(dialog, true);
+    }
+
+    private void showInstructionsDialog() {
+        final Dialog dialog = fullDialog();
+        LinearLayout outer = dialogRoot();
+        dialog.setContentView(outer);
+        outer.addView(tv(tr("Инструкция", "Instructions"), 24, TEXT, Typeface.BOLD, Gravity.CENTER), matchWrap());
+        outer.addView(tv(tr("Короткое описание всех важных функций приложения простыми словами.", "A short plain-language description of the app’s important functions."), 14, MUTED, Typeface.NORMAL, Gravity.CENTER), matchWrap());
+        space(outer, 12);
+
+        ScrollView sv = new ScrollView(this);
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        Ui.pad(box, 0, 0, 0, 18);
+        sv.addView(box, new ScrollView.LayoutParams(-1, -2));
+        outer.addView(sv, new LinearLayout.LayoutParams(-1, 0, 1));
+
+        addInstructionItem(box, tr("Включить приложение", "Enable app"), tr("Полностью включает или отключает работу Navi Overlay.", "Fully enables or disables Navi Overlay."));
+        addInstructionItem(box, tr("Показывать только поверх выбранных приложений", "Show only over selected apps"), tr("Окно будет показываться только поверх выбранных навигаторов.", "The window will appear only over the selected navigation apps."));
+        addInstructionItem(box, tr("Приложения навигации", "Navigation apps"), tr("Список навигаторов, поверх которых может показываться окно.", "List of navigation apps where the window may appear."));
+        addInstructionItem(box, tr("Аудио приложения", "Audio apps"), tr("Список плееров, из которых брать название трека и обложку.", "List of players used for track title and album art."));
+        addInstructionItem(box, tr("Приложения с приоритетным окном", "Priority overlay apps"), tr("Если у этих приложений появляется своё окно, Navi Overlay временно уступает ему место.", "If these apps show their own window, Navi Overlay temporarily gives it priority."));
+        addInstructionItem(box, tr("Настройки текста", "Text settings"), tr("Размер, тень, выравнивание, шрифт и жирность текста в окне.", "Size, shadow, alignment, font and bold style of the text in the window."));
+        addInstructionItem(box, tr("Настройки окна", "Window settings"), tr("Прозрачность, форма, отступы, время показа, положение окна и поведение при паузе.", "Transparency, border shape, offsets, display time, position and pause behavior."));
+        addInstructionItem(box, tr("Настройки цвета", "Color settings"), tr("Меняет цвета окна, рамки, текста, полосы перемотки и других элементов.", "Changes the colors of the window, border, text, seek bar and other elements."));
+        addInstructionItem(box, tr("Положение окна", "Window position"), tr("Переносит окно в один из стандартных углов или в центр экрана.", "Moves the window to one of the standard corners or to the center of the screen."));
+        addInstructionItem(box, tr("Пресет дизайна", "Design preset"), tr("Быстро меняет общий стиль окна: форму, плотность и характер рамки.", "Quickly changes the overall window style: shape, density and border character."));
+        addInstructionItem(box, tr("Настройка кнопок управления музыкой", "Music control buttons settings"), tr("Размер, форма и расстояние между кнопками назад, пауза и вперёд.", "Size, shape and spacing of previous, pause and next buttons."));
+        addInstructionItem(box, tr("Поведение окна при паузе", "Window behavior on pause"), tr("Определяет, скрывать ли окно на паузе, оставлять его или убирать с задержкой.", "Defines whether the window hides on pause, stays visible, or hides after a short delay."));
+        addInstructionItem(box, tr("Разрешения", "Permissions"), tr("Раздел для выдачи системных разрешений, без которых окно и распознавание музыки не смогут работать стабильно.", "Section for granting the system permissions required for stable overlay and music detection."));
+        addInstructionItem(box, tr("Поверх окон", "Draw over apps"), tr("Разрешение на показ окна поверх навигатора и других приложений.", "Permission to show the window over navigation and other apps."));
+        addInstructionItem(box, tr("Доступ к уведомлениям", "Notification access"), tr("Нужен для чтения уведомлений плееров и получения информации о треках.", "Required to read player notifications and obtain track information."));
+        addInstructionItem(box, tr("Уведомления приложения", "App notifications"), tr("Дополнительное разрешение Android 13+, чтобы само приложение могло показывать свои уведомления.", "Extra Android 13+ permission so the app can show its own notifications."));
+        addInstructionItem(box, tr("Специальные возможности", "Accessibility"), tr("Помогают точнее понимать, что сейчас находится на экране магнитолы или телефона.", "Helps the app more accurately understand what is currently on the screen."));
+        addInstructionItem(box, tr("История использования", "Usage access"), tr("Запасной способ определить активное приложение, если системный экран меняется нестандартно.", "Fallback way to detect the active app if the system screen changes in a non-standard way."));
+        addInstructionItem(box, tr("Диагностика", "Diagnostics"), tr("Помогает понять, почему окно не появляется, и позволяет быстро скопировать отчёт.", "Helps you understand why the window does not appear and lets you quickly copy a report."));
+        addInstructionItem(box, tr("Показывать окно постоянно", "Show window continuously"), tr("Окно не скрывается по таймеру, пока трек считается активным.", "The window does not hide by timer while the track is considered active."));
+        addInstructionItem(box, tr("Полоса перемотки трека", "Track seek bar"), tr("Появляется под текстом и позволяет перематывать трек пальцем. Работает только вместе с постоянным показом и только там, где плеер поддерживает перемотку.", "Appears under the text and lets you seek the track with your finger. Works only with continuous display and only where the player supports seeking."));
+        addInstructionItem(box, tr("Показывать обложку в окне", "Show album art in the window"), tr("Добавляет обложку слева от текста, если плеер действительно передаёт картинку трека.", "Adds album art to the left of the text if the player actually provides track artwork."));
+        addInstructionItem(box, tr("Тапы по обложке", "Album art taps"), tr("Если обложка включена и кнопки управления выключены, одиночный тап ставит музыку на паузу, а двойной тап открывает текущий плеер.", "If album art is enabled and control buttons are disabled, a single tap pauses the music and a double tap opens the current player."));
+        addInstructionItem(box, tr("Кнопки управления музыкой в overlay", "Media control buttons in overlay"), tr("Добавляет в окно кнопки назад, пауза и вперёд прямо поверх навигатора.", "Adds previous, pause and next buttons directly inside the window over navigation."));
+        addInstructionItem(box, tr("Свайп по overlay: влево/вправо переключает треки", "Swipe on overlay: left/right switches tracks"), tr("Позволяет перелистывать треки быстрым движением по самому окну.", "Lets you switch tracks with a quick swipe directly on the window."));
+        addInstructionItem(box, tr("Snap: магнит к краям и центру после перетаскивания", "Snap: magnet to edges and center after dragging"), tr("После перетаскивания окно само прилипает к удобным зонам экрана.", "After dragging, the window automatically snaps to convenient screen zones."));
+        addInstructionItem(box, tr("При изменении громкости временно приглушать окно", "Temporarily dim the window on volume change"), tr("Во время регулировки громкости окно становится менее заметным и потом возвращает обычную яркость.", "While adjusting volume, the window becomes less visible and then returns to normal brightness."));
+        addInstructionItem(box, tr("Floating режим: показывать трек даже без навигатора", "Floating mode: show the track even without navigation"), tr("Разрешает показывать окно даже тогда, когда навигатор не открыт.", "Allows the window to appear even when navigation is not open."));
+        addInstructionItem(box, tr("Сворачивать окно вместе с навигацией", "Hide the window together with navigation"), tr("Когда навигация уходит с экрана, overlay тоже прячется.", "When navigation leaves the screen, the overlay hides as well."));
+        addInstructionItem(box, tr("Фиксированный размер окна", "Fixed window size"), tr("Фиксирует ширину окна и позволяет не зависеть от длины текста.", "Locks the window width so it does not depend on text length."));
+        addInstructionItem(box, tr("Мягкое восстановление после системных окон", "Soft recovery after system windows"), tr("Для проблемных магнитол. После громкости или чужих окон приложение восстанавливает overlay мягче и спокойнее.", "For problematic head units. After volume or other windows, the app restores the overlay more gently."));
+        addInstructionItem(box, tr("История последних треков", "Recent track history"), tr("Показывает последние 30 треков и позволяет быстро копировать названия.", "Shows the latest 30 tracks and lets you quickly copy track names."));
+        addInstructionItem(box, tr("Скопировать отчёт", "Copy report"), tr("Сохраняет технический отчёт в буфер обмена, чтобы проще было отправить его для разбора.", "Copies a technical report to the clipboard so it is easier to send for troubleshooting."));
+        addInstructionItem(box, tr("Проверить окно", "Preview window"), tr("Показывает тестовое окно на 5 секунд, чтобы быстро увидеть изменения.", "Shows a test window for 5 seconds so you can quickly preview changes."));
+        addInstructionItem(box, tr("Проверить и восстановить", "Check and recover"), tr("Открывает нужные настройки, если приложению реально не хватает разрешений.", "Opens the needed settings if the app is really missing permissions."));
+
+        outer.addView(secondaryButton(tr("Готово", "Done"), v -> dialog.dismiss()), btnLp());
+        dialog.show();
+        fitDialog(dialog, true);
+    }
+
+    private void addInstructionItem(LinearLayout parent, String title, String desc) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.VERTICAL);
+        row.setBackground(Ui.stroke(CARD_2, 1, 0x223A4658, 16, this));
+        Ui.pad(row, 14, 12, 14, 12);
+        row.addView(tv(title, 15, TEXT, Typeface.BOLD, Gravity.START), matchWrap());
+        TextView hint = tv(desc, 13, MUTED, Typeface.NORMAL, Gravity.START);
+        hint.setLineSpacing(Ui.dp(this, 2), 1.0f);
+        row.addView(hint, matchWrap());
+        parent.addView(row, smallGapLp());
+    }
+
     private ArrayList<AppInfo> loadApps(Set<String> selected) {
         ArrayList<AppInfo> out = new ArrayList<>();
-        PackageManager pm = getPackageManager();
-        Intent i = new Intent(Intent.ACTION_MAIN, null);
-        i.addCategory(Intent.CATEGORY_LAUNCHER);
-        List<ResolveInfo> infos = pm.queryIntentActivities(i, 0);
+        ArrayList<AppInfo> cached = ensureInstalledAppsCache();
         HashSet<String> seen = new HashSet<>();
-        for (ResolveInfo r : infos) {
-            String p = r.activityInfo.packageName;
-            String l = String.valueOf(r.loadLabel(pm));
-            out.add(new AppInfo(l, p, selected.contains(p)));
-            seen.add(p);
+        for (AppInfo item : cached) {
+            out.add(new AppInfo(item.label, item.packageName, selected.contains(item.packageName)));
+            seen.add(item.packageName);
         }
         for (String p : selected) {
             if (p != null && !p.isEmpty() && !seen.contains(p)) out.add(new AppInfo(tr("Добавлено вручную", "Added manually"), p, true));
@@ -350,6 +511,21 @@ public class MainActivity extends Activity {
             return a.label.compareToIgnoreCase(b.label);
         });
         return out;
+    }
+
+    private ArrayList<AppInfo> ensureInstalledAppsCache() {
+        if (installedAppsCache != null) return installedAppsCache;
+        installedAppsCache = new ArrayList<>();
+        PackageManager pm = getPackageManager();
+        Intent i = new Intent(Intent.ACTION_MAIN, null);
+        i.addCategory(Intent.CATEGORY_LAUNCHER);
+        List<ResolveInfo> infos = pm.queryIntentActivities(i, 0);
+        for (ResolveInfo r : infos) {
+            String p = r.activityInfo.packageName;
+            String l = String.valueOf(r.loadLabel(pm));
+            installedAppsCache.add(new AppInfo(l, p, false));
+        }
+        return installedAppsCache;
     }
 
     private void showTextSettingsDialog() {
@@ -372,6 +548,7 @@ public class MainActivity extends Activity {
         addSeek(box, tr("Размер текста", "Text size"), 1, 100, prefs.textSize(), v -> { prefs.setTextSize(v); TrackOverlayManager.refresh(this); });
         switchRow(box, tr("Жирный шрифт", "Bold text"), prefs.textBold(), on -> { prefs.setTextBold(on); TrackOverlayManager.refresh(this); });
         switchRow(box, tr("Тень текста", "Text shadow"), prefs.textShadow(), on -> { prefs.setTextShadow(on); TrackOverlayManager.refresh(this); });
+        box.addView(menuButton(tr("Выравнивание текста", "Text alignment"), tr("Выбор: слева или по центру", "Choose: left or center"), v -> showTextAlignmentDialog()), smallGapLp());
         box.addView(menuButton(tr("Шрифт окна", "Window font"), tr("Выбор шрифта из набора образцов", "Pick a font from preview samples"), v -> showFontDialog()), smallGapLp());
         box.addView(previewButton(tr("Проверить окно", "Preview window"), v -> TrackOverlayManager.test(this)), btnLp());
 
@@ -405,6 +582,8 @@ public class MainActivity extends Activity {
         addSeek(box, tr("Время показа, сек. 0 = не скрывать", "Display time, sec. 0 = do not hide"), 0, 10, prefs.displayMs() / 1000, v -> { prefs.setDisplayMs(v * 1000); TrackOverlayManager.refresh(this); });
         box.addView(menuButton(tr("Положение окна", "Window position"), tr("Выбор одного из стандартных положений окна", "Choose one of the standard window positions"), v -> showPositionDialog()), smallGapLp());
         box.addView(menuButton(tr("Пресет дизайна", "Design preset"), tr("Готовые стили формы и оформления overlay", "Ready-made overlay shape and style presets"), v -> showDesignPresetDialog()), smallGapLp());
+        box.addView(menuButton(tr("Настройка кнопок управления музыкой", "Music control buttons settings"), tr("Размер, форма и расстояние между кнопками", "Size, shape and spacing of control buttons"), v -> showControlButtonsDialog()), smallGapLp());
+        box.addView(menuButton(tr("Поведение окна при паузе", "Window behavior on pause"), tr("Что делать с окном, если трек поставлен на паузу", "What the window should do when the track is paused"), v -> showPauseBehaviorDialog()), smallGapLp());
         box.addView(previewButton(tr("Проверить окно", "Preview window"), v -> TrackOverlayManager.test(this)), btnLp());
 
         outer.addView(secondaryButton(tr("Готово", "Done"), v -> dialog.dismiss()), btnLp());
@@ -431,6 +610,8 @@ public class MainActivity extends Activity {
         box.addView(menuButton(tr("Выбор цвета окна", "Window color"), tr("Палитра фона окна", "Background palette"), v -> showColorDialog(0)), smallGapLp());
         box.addView(menuButton(tr("Цвет рамки окна", "Window border color"), tr("Палитра для контура overlay", "Overlay border palette"), v -> showBorderColorDialog(false)), smallGapLp());
         box.addView(menuButton(tr("Цвет рамок кнопок", "Control border color"), tr("Палитра для кнопок ⏮ ⏯ ⏭", "Palette for ⏮ ⏯ ⏭ buttons"), v -> showBorderColorDialog(true)), smallGapLp());
+        box.addView(menuButton(tr("Цвет полосы перемотки", "Seek bar color"), tr("Цвет самой линии перемотки трека", "Color of the track seek line"), v -> showColorDialog(3)), smallGapLp());
+        box.addView(menuButton(tr("Цвет ползунка перемотки", "Seek thumb color"), tr("Цвет кружка, за который тянут полосу", "Color of the draggable seek thumb"), v -> showColorDialog(4)), smallGapLp());
         box.addView(menuButton(tr("Цвет исполнителя", "Artist color"), tr("Отдельный цвет для исполнителя", "Separate color for artist text"), v -> showColorDialog(1)), smallGapLp());
         box.addView(menuButton(tr("Цвет названия песни", "Track title color"), tr("Отдельный цвет для названия песни", "Separate color for song title"), v -> showColorDialog(2)), smallGapLp());
         box.addView(previewButton(tr("Проверить окно", "Preview window"), v -> TrackOverlayManager.test(this)), btnLp());
@@ -464,6 +645,44 @@ public class MainActivity extends Activity {
         switchRow(box, tr("Floating режим: показывать трек даже без навигатора", "Floating mode: show the track even without navigation"), prefs.featureFloating(), on -> prefs.setFeatureFloating(on));
         switchRow(box, tr("Показывать обложку в окне", "Show album art in the window"), prefs.featureAlbumArt(), on -> { prefs.setFeatureAlbumArt(on); TrackOverlayManager.refresh(this); });
         switchRow(box, tr("Сворачивать окно вместе с навигацией", "Hide the window together with navigation"), prefs.featureHideWithNavigation(), on -> prefs.setFeatureHideWithNavigation(on));
+        Switch alwaysOnSwitch = switchRow(box, tr("Показывать окно постоянно", "Show window continuously"), prefs.displayWhilePlaying(), on -> {
+            prefs.setDisplayWhilePlaying(on);
+            if (!on && prefs.featureSeekBar()) prefs.setFeatureSeekBar(false);
+            TrackOverlayManager.refresh(this);
+        });
+        LinearLayout seekRow = new LinearLayout(this);
+        seekRow.setOrientation(LinearLayout.HORIZONTAL);
+        seekRow.setGravity(Gravity.CENTER_VERTICAL);
+        seekRow.setBackground(Ui.stroke(CARD_2, 1, STROKE_SOFT, 18, this));
+        Ui.pad(seekRow, 14, 12, 12, 12);
+        TextView seekName = tv(tr("Полоса перемотки трека", "Track seek bar"), 16, TEXT, Typeface.BOLD, Gravity.START);
+        seekRow.addView(seekName, new LinearLayout.LayoutParams(0, -2, 1));
+        Switch seekSwitch = new Switch(this);
+        seekSwitch.setChecked(prefs.featureSeekBar());
+        seekSwitch.setOnCheckedChangeListener((buttonView, isChecked) -> {
+            prefs.setFeatureSeekBar(isChecked);
+            TrackOverlayManager.refresh(this);
+        });
+        seekRow.addView(seekSwitch, new LinearLayout.LayoutParams(Ui.dp(this, 56), -2));
+        box.addView(seekRow, smallGapLp());
+        TextView seekHint = tv(tr("Работает только вместе с функцией «Показывать окно постоянно». Полоса появляется под текстом и позволяет тянуть позицию трека пальцем.", "Works only with “Show window continuously”. The bar appears under the text and lets you drag the track position with your finger."), 12, MUTED_2, Typeface.NORMAL, Gravity.START);
+        LinearLayout.LayoutParams seekHintLp = matchWrap();
+        seekHintLp.setMargins(Ui.dp(this, 8), Ui.dp(this, 2), Ui.dp(this, 8), 0);
+        box.addView(seekHint, seekHintLp);
+        Runnable syncSeekRow = () -> {
+            boolean enabled = alwaysOnSwitch.isChecked();
+            seekRow.setAlpha(enabled ? 1f : 0.5f);
+            seekHint.setAlpha(enabled ? 1f : 0.65f);
+            seekSwitch.setEnabled(enabled);
+            if (!enabled && seekSwitch.isChecked()) seekSwitch.setChecked(false);
+        };
+        alwaysOnSwitch.setOnCheckedChangeListener((buttonView, isChecked) -> {
+            prefs.setDisplayWhilePlaying(isChecked);
+            if (!isChecked && prefs.featureSeekBar()) prefs.setFeatureSeekBar(false);
+            syncSeekRow.run();
+            TrackOverlayManager.refresh(this);
+        });
+        syncSeekRow.run();
         switchRow(box, tr("Фиксированный размер окна", "Fixed window size"), prefs.featureFixedWindow(), on -> {
             prefs.setFeatureFixedWindow(on);
             TrackOverlayManager.refresh(this);
@@ -472,10 +691,14 @@ public class MainActivity extends Activity {
         LinearLayout.LayoutParams fixedHintLp = matchWrap();
         fixedHintLp.setMargins(Ui.dp(this, 8), Ui.dp(this, 2), Ui.dp(this, 8), 0);
         box.addView(fixedHint, fixedHintLp);
-        switchRow(box, tr("Показывать окно постоянно", "Show window continuously"), prefs.displayWhilePlaying(), on -> {
-            prefs.setDisplayWhilePlaying(on);
-            TrackOverlayManager.refresh(this);
-        });
+        switchRow(box, tr("Мягкое восстановление после системных окон", "Soft recovery after system windows"), prefs.featureSoftRecoverySystemWindows(), on -> prefs.setFeatureSoftRecoverySystemWindows(on));
+        TextView recoveryHint = tv(
+                tr("Для проблемных магнитол. После громкости или чужих системных окон приложение не пытается сразу вернуть overlay, а ждёт короткую паузу и восстанавливает его мягко.",
+                        "For problematic head units. After volume or other system windows, the app waits for a short quiet period and restores the overlay softly instead of forcing it immediately."),
+                12, MUTED_2, Typeface.NORMAL, Gravity.START);
+        LinearLayout.LayoutParams recoveryHintLp = matchWrap();
+        recoveryHintLp.setMargins(Ui.dp(this, 8), Ui.dp(this, 2), Ui.dp(this, 8), 0);
+        box.addView(recoveryHint, recoveryHintLp);
         box.addView(previewButton(tr("Проверить окно", "Preview window"), v -> TrackOverlayManager.test(this)), btnLp());
 
         outer.addView(secondaryButton(tr("Готово", "Done"), v -> dialog.dismiss()), btnLp());
@@ -531,7 +754,9 @@ public class MainActivity extends Activity {
             cell.setOnClickListener(v -> {
                 if (target == 0) prefs.setBgColor(col);
                 else if (target == 1) prefs.setArtistColor(col);
-                else prefs.setTitleColor(col);
+                else if (target == 2) prefs.setTitleColor(col);
+                else if (target == 3) prefs.setSeekBarColor(col);
+                else prefs.setSeekThumbColor(col);
                 TrackOverlayManager.test(this);
             });
         }
@@ -544,6 +769,8 @@ public class MainActivity extends Activity {
     private String colorTargetTitle(int target) {
         if (target == 1) return tr("Цвет исполнителя", "Artist color");
         if (target == 2) return tr("Цвет названия песни", "Track title color");
+        if (target == 3) return tr("Цвет полосы перемотки", "Seek bar color");
+        if (target == 4) return tr("Цвет ползунка перемотки", "Seek thumb color");
         return tr("Выбор цвета окна", "Window color");
     }
 
@@ -665,6 +892,190 @@ public class MainActivity extends Activity {
         }
 
         outer.addView(primaryButton(tr("Готово", "Done"), v -> dialog.dismiss()), btnLp());
+        dialog.show();
+        fitDialog(dialog, true);
+    }
+
+    private void showTextAlignmentDialog() {
+        final Dialog dialog = fullDialog();
+        LinearLayout outer = dialogRoot();
+        dialog.setContentView(outer);
+        outer.addView(tv(tr("Выравнивание текста", "Text alignment"), 24, TEXT, Typeface.BOLD, Gravity.CENTER), matchWrap());
+        outer.addView(tv(tr("Выбери, как выравнивать строку трека внутри окна.", "Choose how to align the track line inside the window."), 14, MUTED, Typeface.NORMAL, Gravity.CENTER), matchWrap());
+        space(outer, 12);
+
+        ScrollView sv = new ScrollView(this);
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        Ui.pad(box, 0, 0, 0, 18);
+        sv.addView(box, new ScrollView.LayoutParams(-1, -2));
+        outer.addView(sv, new LinearLayout.LayoutParams(-1, 0, 1));
+
+        String[] labels = new String[]{tr("Слева", "Left"), tr("По центру", "Center")};
+        int[] values = new int[]{Prefs.TEXT_ALIGN_LEFT, Prefs.TEXT_ALIGN_CENTER};
+        ArrayList<RadioButton> radios = new ArrayList<>();
+        int selected = prefs.textAlign();
+        for (int i = 0; i < labels.length; i++) {
+            final int value = values[i];
+            RadioButton rb = new RadioButton(this);
+            rb.setText(labels[i]);
+            rb.setTextColor(TEXT);
+            rb.setTextSize(16);
+            rb.setButtonTintList(android.content.res.ColorStateList.valueOf(prefs.accentColor()));
+            rb.setChecked(value == selected);
+            rb.setBackground(Ui.stroke(CARD_2, 1, 0x223A4658, 18, this));
+            Ui.pad(rb, 14, 12, 14, 12);
+            rb.setOnClickListener(v -> {
+                prefs.setTextAlign(value);
+                TrackOverlayManager.refresh(this);
+                for (RadioButton radio : radios) radio.setChecked(radio == rb);
+            });
+            radios.add(rb);
+            box.addView(rb, smallGapLp());
+        }
+        box.addView(previewButton(tr("Проверить окно", "Preview window"), v -> TrackOverlayManager.test(this)), btnLp());
+        outer.addView(secondaryButton(tr("Готово", "Done"), v -> dialog.dismiss()), btnLp());
+        dialog.show();
+        fitDialog(dialog, true);
+    }
+
+    private void showControlButtonsDialog() {
+        final Dialog dialog = fullDialog();
+        LinearLayout outer = dialogRoot();
+        dialog.setContentView(outer);
+        outer.addView(tv(tr("Настройка кнопок управления музыкой", "Music control buttons settings"), 24, TEXT, Typeface.BOLD, Gravity.CENTER), matchWrap());
+        outer.addView(tv(tr("Здесь можно настроить размер, форму и расстояние между кнопками управления.", "Set button size, shape and spacing here."), 14, MUTED, Typeface.NORMAL, Gravity.CENTER), matchWrap());
+        space(outer, 12);
+
+        ScrollView sv = new ScrollView(this);
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        Ui.pad(box, 0, 0, 0, 18);
+        sv.addView(box, new ScrollView.LayoutParams(-1, -2));
+        outer.addView(sv, new LinearLayout.LayoutParams(-1, 0, 1));
+
+        box.addView(menuButton(tr("Размер кнопок", "Button size"), tr("Маленькие, средние или крупные", "Small, medium or large"), v -> showControlButtonsSizeDialog()), smallGapLp());
+        box.addView(menuButton(tr("Форма кнопок", "Button shape"), tr("Круглые, прямоугольные, квадратные или без рамок", "Round, rectangular, square or borderless"), v -> showControlButtonsShapeDialog()), smallGapLp());
+        box.addView(menuButton(tr("Расстояние между кнопками", "Button spacing"), tr("Компактно, обычно или широко", "Compact, normal or wide"), v -> showControlButtonsSpacingDialog()), smallGapLp());
+        box.addView(previewButton(tr("Проверить окно", "Preview window"), v -> TrackOverlayManager.test(this)), btnLp());
+        outer.addView(secondaryButton(tr("Готово", "Done"), v -> dialog.dismiss()), btnLp());
+        dialog.show();
+        fitDialog(dialog, true);
+    }
+
+    private void showPauseBehaviorDialog() {
+        final Dialog dialog = fullDialog();
+        LinearLayout outer = dialogRoot();
+        dialog.setContentView(outer);
+        outer.addView(tv(tr("Поведение окна при паузе", "Window behavior on pause"), 24, TEXT, Typeface.BOLD, Gravity.CENTER), matchWrap());
+        outer.addView(tv(tr("Выбери, что делать с окном, если музыка остановилась на паузе.", "Choose what happens to the window when playback is paused."), 14, MUTED, Typeface.NORMAL, Gravity.CENTER), matchWrap());
+        space(outer, 12);
+
+        ScrollView sv = new ScrollView(this);
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        Ui.pad(box, 0, 0, 0, 18);
+        sv.addView(box, new ScrollView.LayoutParams(-1, -2));
+        outer.addView(sv, new LinearLayout.LayoutParams(-1, 0, 1));
+
+        String[] labels = new String[]{
+                tr("Оставлять окно", "Keep the window"),
+                tr("Скрывать окно", "Hide the window"),
+                tr("Оставлять ненадолго и потом скрывать", "Keep briefly, then hide")
+        };
+        int[] values = new int[]{Prefs.PAUSE_BEHAVIOR_KEEP, Prefs.PAUSE_BEHAVIOR_HIDE, Prefs.PAUSE_BEHAVIOR_SHORT};
+        ArrayList<RadioButton> radios = new ArrayList<>();
+        int selected = prefs.pauseBehavior();
+        for (int i = 0; i < labels.length; i++) {
+            final int value = values[i];
+            RadioButton rb = new RadioButton(this);
+            rb.setText(labels[i]);
+            rb.setTextColor(TEXT);
+            rb.setTextSize(16);
+            rb.setButtonTintList(android.content.res.ColorStateList.valueOf(prefs.accentColor()));
+            rb.setChecked(value == selected);
+            rb.setBackground(Ui.stroke(CARD_2, 1, 0x223A4658, 18, this));
+            Ui.pad(rb, 14, 12, 14, 12);
+            rb.setOnClickListener(v -> {
+                prefs.setPauseBehavior(value);
+                for (RadioButton radio : radios) radio.setChecked(radio == rb);
+            });
+            radios.add(rb);
+            box.addView(rb, smallGapLp());
+        }
+        outer.addView(secondaryButton(tr("Готово", "Done"), v -> dialog.dismiss()), btnLp());
+        dialog.show();
+        fitDialog(dialog, true);
+    }
+
+    private void showControlButtonsSizeDialog() {
+        showControlButtonsChoiceDialog(
+                tr("Размер кнопок", "Button size"),
+                tr("Выбери размер кнопок управления музыкой.", "Choose the size of media control buttons."),
+                new String[]{tr("Маленькие", "Small"), tr("Средние", "Medium"), tr("Крупные", "Large")},
+                new int[]{Prefs.CONTROLS_SIZE_SMALL, Prefs.CONTROLS_SIZE_MEDIUM, Prefs.CONTROLS_SIZE_LARGE},
+                prefs.controlsSize(),
+                value -> prefs.setControlsSize(value));
+    }
+
+    private void showControlButtonsShapeDialog() {
+        showControlButtonsChoiceDialog(
+                tr("Форма кнопок", "Button shape"),
+                tr("Выбери форму и рамку кнопок управления.", "Choose the shape and border style of control buttons."),
+                new String[]{tr("Круглые", "Round"), tr("Прямоугольные", "Rectangular"), tr("Квадратные", "Square"), tr("Без рамок", "Borderless")},
+                new int[]{Prefs.CONTROLS_SHAPE_ROUND, Prefs.CONTROLS_SHAPE_RECT, Prefs.CONTROLS_SHAPE_SQUARE, Prefs.CONTROLS_SHAPE_BORDERLESS},
+                prefs.controlsShape(),
+                value -> prefs.setControlsShape(value));
+    }
+
+    private void showControlButtonsSpacingDialog() {
+        showControlButtonsChoiceDialog(
+                tr("Расстояние между кнопками", "Button spacing"),
+                tr("Выбери, насколько кнопки должны быть разнесены друг от друга.", "Choose how far apart the buttons should be."),
+                new String[]{tr("Компактно", "Compact"), tr("Обычно", "Normal"), tr("Шире", "Wide")},
+                new int[]{Prefs.CONTROLS_SPACING_COMPACT, Prefs.CONTROLS_SPACING_NORMAL, Prefs.CONTROLS_SPACING_WIDE},
+                prefs.controlsSpacing(),
+                value -> prefs.setControlsSpacing(value));
+    }
+
+    private interface IntSetter { void set(int value); }
+
+    private void showControlButtonsChoiceDialog(String title, String subtitle, String[] labels, int[] values, int selected, IntSetter setter) {
+        final Dialog dialog = fullDialog();
+        LinearLayout outer = dialogRoot();
+        dialog.setContentView(outer);
+        outer.addView(tv(title, 24, TEXT, Typeface.BOLD, Gravity.CENTER), matchWrap());
+        outer.addView(tv(subtitle, 14, MUTED, Typeface.NORMAL, Gravity.CENTER), matchWrap());
+        space(outer, 12);
+
+        ScrollView sv = new ScrollView(this);
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        Ui.pad(box, 0, 0, 0, 18);
+        sv.addView(box, new ScrollView.LayoutParams(-1, -2));
+        outer.addView(sv, new LinearLayout.LayoutParams(-1, 0, 1));
+
+        ArrayList<RadioButton> radios = new ArrayList<>();
+        for (int i = 0; i < labels.length; i++) {
+            final int value = values[i];
+            RadioButton rb = new RadioButton(this);
+            rb.setText(labels[i]);
+            rb.setTextColor(TEXT);
+            rb.setTextSize(16);
+            rb.setButtonTintList(android.content.res.ColorStateList.valueOf(prefs.accentColor()));
+            rb.setChecked(value == selected);
+            rb.setBackground(Ui.stroke(CARD_2, 1, 0x223A4658, 18, this));
+            Ui.pad(rb, 14, 12, 14, 12);
+            rb.setOnClickListener(v -> {
+                setter.set(value);
+                TrackOverlayManager.refresh(this);
+                for (RadioButton radio : radios) radio.setChecked(radio == rb);
+            });
+            radios.add(rb);
+            box.addView(rb, smallGapLp());
+        }
+        box.addView(previewButton(tr("Проверить окно", "Preview window"), v -> TrackOverlayManager.test(this)), btnLp());
+        outer.addView(secondaryButton(tr("Готово", "Done"), v -> dialog.dismiss()), btnLp());
         dialog.show();
         fitDialog(dialog, true);
     }
@@ -811,11 +1222,23 @@ public class MainActivity extends Activity {
             sb.append("featureSnap=").append(prefs.featureSnap()).append("\n");
             sb.append("featureVolumeDim=").append(prefs.featureVolumeDim()).append("\n");
             sb.append("featureFloating=").append(prefs.featureFloating()).append("\n");
+            sb.append("featureSoftRecoverySystemWindows=").append(prefs.featureSoftRecoverySystemWindows()).append("\n");
+            sb.append("featureSeekBar=").append(prefs.featureSeekBar()).append("\n");
+            sb.append("textAlign=").append(prefs.textAlign()).append("\n");
+            sb.append("conflictApps=").append(new ArrayList<>(prefs.conflictApps())).append("\n");
+            sb.append("controlsSize=").append(prefs.controlsSize()).append("\n");
+            sb.append("controlsShape=").append(prefs.controlsShape()).append("\n");
+            sb.append("controlsSpacing=").append(prefs.controlsSpacing()).append("\n");
+            sb.append("pauseBehavior=").append(prefs.pauseBehavior()).append("\n");
             sb.append("designPreset=").append(prefs.designPreset()).append("\n");
             sb.append("textFont=").append(OverlayFonts.nameAt(prefs.textFont())).append("\n");
             sb.append("borderColor=#").append(Integer.toHexString(prefs.borderColor())).append("\n");
             sb.append("borderWidth=").append(prefs.borderWidth()).append("\n");
             sb.append("controlsBorderColor=#").append(Integer.toHexString(prefs.controlsBorderColor())).append("\n");
+            int index = 1;
+            for (Prefs.RecentTrack item : prefs.recentTracks()) {
+                sb.append("recentTrack").append(index++).append("=").append(item.display()).append("\n");
+            }
         } catch (Throwable t) { sb.append("musicStateError=").append(t.getClass().getSimpleName()).append("\n"); }
         ClipboardManager cm = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
         if (cm != null) cm.setPrimaryClip(ClipData.newPlainText("Navi Overlay diagnostics", sb.toString()));

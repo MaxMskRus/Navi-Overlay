@@ -150,7 +150,12 @@ public class MonitorService extends Service {
             if (am == null) return;
             int v = am.getStreamVolume(AudioManager.STREAM_MUSIC);
             if (lastMusicVolume >= 0 && v != lastMusicVolume) {
-                ForegroundState.markTransientUi(2800L);
+                if (p.featureSoftRecoverySystemWindows()) {
+                    ForegroundState.markTransientUi(3800L);
+                    com.navioverlay.car.overlay.TrackOverlayManager.noteTransientInterruption(this, 2400L);
+                } else {
+                    ForegroundState.markTransientUi(2800L);
+                }
                 if (p.featureVolumeDim()) com.navioverlay.car.overlay.TrackOverlayManager.dimTemporarily(this);
             }
             lastMusicVolume = v;

@@ -14,6 +14,7 @@ public final class AppStateDetector {
     private final Context app;
     private final Prefs prefs;
     private long lastNavigatorVisibleAt = 0L;
+    private static final long SHORT_OTHER_APP_GRACE_MS = 4500L;
 
     public AppStateDetector(Context context) {
         app = context.getApplicationContext();
@@ -65,11 +66,25 @@ public final class AppStateDetector {
                 && !ForegroundState.isTransientPackage(usagePkg)
                 && !prefs.isTrigger(usagePkg)
                 && !self.equals(usagePkg);
+        boolean accessibilityConflictApp = accessibilityOtherApp && prefs.isConflictApp(accessibilityPkg);
+        boolean usageConflictApp = usageOtherApp && prefs.isConflictApp(usagePkg);
         boolean canUseLastTriggerFallback = transientWindow
                 || (TextUtils.isEmpty(accessibilityPkg) && TextUtils.isEmpty(usagePkg));
 
         if (transientWindow && now - lastNavigatorVisibleAt < graceMs) {
             return new Result(true, pkg, true, "Временное системное окно поверх навигатора");
+        }
+
+        if ((accessibilityConflictApp || usageConflictApp) && now - lastNavigatorVisibleAt < graceMs) {
+            String conflictPkg = accessibilityConflictApp ? accessibilityPkg : usagePkg;
+            return new Result(true, conflictPkg, true, "Внешнее окно из списка конфликтующих приложений");
+        }
+
+        if (prefs.featureSoftRecoverySystemWindows()
+                && (accessibilityOtherApp || usageOtherApp)
+                && now - lastNavigatorVisibleAt < Math.min(graceMs, SHORT_OTHER_APP_GRACE_MS)) {
+            String transientPkg = !accessibilityPkg.isEmpty() ? accessibilityPkg : usagePkg;
+            return new Result(true, transientPkg, true, "Короткое внешнее окно поверх навигатора");
         }
 
         if (accessibilityOtherApp) {

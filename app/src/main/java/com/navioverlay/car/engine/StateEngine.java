@@ -18,7 +18,10 @@ public final class StateEngine {
     private long lastShownAt = 0L;
     private boolean wasNavigatorVisible = false;
     private boolean wasPlayerActive = false;
+    private boolean wasTrackPlaying = false;
+    private long pausedVisibleUntilAt = 0L;
     private long lastDebugAt = 0L;
+    private static final long PAUSED_HOLD_MS = 2500L;
 
     public StateEngine(Context context) {
         app = context.getApplicationContext();
@@ -35,23 +38,70 @@ public final class StateEngine {
         boolean floating = prefs.featureFloating();
         boolean nav = floating || appState.navigatorVisible;
         boolean hasTrack = track != null && track.hasText();
-        boolean activePlayer = hasTrack && (track.playing
-                || TrackSnapshot.SOURCE_MEDIA_SESSION.equals(track.sourceType)
-                || TrackSnapshot.SOURCE_NOTIFICATION.equals(track.sourceType)
-                || TrackSnapshot.SOURCE_LAST_GOOD.equals(track.sourceType));
         long now = System.currentTimeMillis();
+        boolean canResumePaused = hasTrack && (TrackSnapshot.SOURCE_MEDIA_SESSION.equals(track.sourceType)
+                || TrackSnapshot.SOURCE_NOTIFICATION.equals(track.sourceType));
+        boolean playingNow = hasTrack && track.playing;
+        if (canResumePaused && wasTrackPlaying && !playingNow && prefs.pauseBehavior() == Prefs.PAUSE_BEHAVIOR_SHORT) {
+            pausedVisibleUntilAt = now + PAUSED_HOLD_MS;
+        } else if (playingNow) {
+            pausedVisibleUntilAt = 0L;
+        }
+        boolean activePlayer;
+        switch (prefs.pauseBehavior()) {
+            case Prefs.PAUSE_BEHAVIOR_HIDE:
+                activePlayer = playingNow;
+                break;
+            case Prefs.PAUSE_BEHAVIOR_SHORT:
+                activePlayer = hasTrack && (playingNow
+                        || TrackSnapshot.SOURCE_LAST_GOOD.equals(track.sourceType)
+                        || (canResumePaused && now < pausedVisibleUntilAt));
+                break;
+            case Prefs.PAUSE_BEHAVIOR_KEEP:
+            default:
+                activePlayer = hasTrack && (playingNow
+                        || TrackSnapshot.SOURCE_MEDIA_SESSION.equals(track.sourceType)
+                        || TrackSnapshot.SOURCE_NOTIFICATION.equals(track.sourceType)
+                        || TrackSnapshot.SOURCE_LAST_GOOD.equals(track.sourceType));
+                break;
+        }
+        boolean softRecoveryMode = prefs.featureSoftRecoverySystemWindows();
+        boolean conflictOverlay = prefs.isConflictApp(appState.foregroundPackage);
+        boolean recentTransientUi = softRecoveryMode && com.navioverlay.car.services.ForegroundState.hasRecentTransientUi();
 
         if (!nav) {
+            if (recentTransientUi) {
+                wasNavigatorVisible = true;
+                TrackOverlayManager.noteTransientInterruption(app, 2400L);
+                debug(now, "hold: recent transient while nav=false fg=" + appState.foregroundPackage);
+                return 700;
+            }
             wasNavigatorVisible = false;
             wasPlayerActive = false;
+            wasTrackPlaying = false;
+            pausedVisibleUntilAt = 0L;
             TrackOverlayManager.hideNow();
             debug(now, "sleep: nav=false fg=" + appState.foregroundPackage);
             return 3000;
         }
 
+        if (softRecoveryMode && appState.transientOverlay) {
+            wasNavigatorVisible = true;
+            TrackOverlayManager.noteTransientInterruption(app, 2400L);
+            debug(now, "transient overlay soft-hold fg=" + appState.foregroundPackage);
+            return 900;
+        }
+
         if (!activePlayer) {
+            if (recentTransientUi) {
+                wasNavigatorVisible = true;
+                TrackOverlayManager.noteTransientInterruption(app, 2400L);
+                debug(now, "hold: recent transient while music=false fg=" + appState.foregroundPackage);
+                return 700;
+            }
             wasNavigatorVisible = true;
             wasPlayerActive = false;
+            wasTrackPlaying = false;
             TrackOverlayManager.hideNow();
             debug(now, "nav=true music=false fg=" + appState.foregroundPackage);
             return 1500;
@@ -59,6 +109,9 @@ public final class StateEngine {
 
         if (appState.transientOverlay) {
             wasNavigatorVisible = true;
+            if (softRecoveryMode || conflictOverlay) {
+                TrackOverlayManager.noteTransientInterruption(app, 2400L);
+            }
             debug(now, "transient overlay, keep engine warm fg=" + appState.foregroundPackage);
             return 900;
         }
@@ -77,13 +130,13 @@ public final class StateEngine {
         boolean coolDownPassed = now - lastShownAt > Math.max(1000, Math.min(4000, prefs.displayMs()));
         boolean restoreAfterNav = enteredNavigator && prefs.featureHideWithNavigation();
         boolean restoreWhilePlaying = enteredNavigator && prefs.displayWhilePlaying() && hasTrack;
-
         if ((restoreWhilePlaying || enteredPlayerActive || !sameTrackSuppressed) && (changed || restoreAfterNav || restoreWhilePlaying || enteredPlayerActive || (enteredNavigator && coolDownPassed))) {
             Logx.d("ENGINE show overlay fg=" + appState.foregroundPackage + " reason=" + (floating ? "floating" : appState.reason));
             if (enteredNavigator) {
                 TrackOverlayManager.markRestoreRequired();
             }
             TrackOverlayManager.showTrack(app, track);
+            if (changed) prefs.pushRecentTrack(track.artist, track.title);
             lastShownKey = track.key();
             lastShownPackage = safe(track.sourcePackage);
             lastShownTitle = safe(track.title);
@@ -92,6 +145,7 @@ public final class StateEngine {
         }
         wasNavigatorVisible = true;
         wasPlayerActive = true;
+        wasTrackPlaying = playingNow;
         return appState.transientOverlay ? 900 : 700;
     }
 
