@@ -8,7 +8,6 @@ import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Intent;
 import android.content.pm.PackageManager;
-import android.content.pm.ResolveInfo;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.ColorDrawable;
@@ -55,29 +54,23 @@ import com.navioverlay.car.services.MonitorService;
 import com.navioverlay.car.services.NavigatorAccessibilityService;
 
 import java.util.ArrayList;
-import java.util.Collections;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
-import java.util.Set;
 
 public class MainActivity extends Activity {
-    private static final int APP_MODE_TRIGGERS = 0;
-    private static final int APP_MODE_PLAYERS = 1;
-    private static final int APP_MODE_CONFLICTS = 2;
-    private static final int BG = 0xFF030712;
-    private static final int BG_2 = 0xFF071021;
-    private static final int CARD = 0xFF101827;
-    private static final int CARD_TOP = 0xFF18233A;
-    private static final int CARD_2 = 0xFF1A2538;
-    private static final int FIELD = 0xFF0B1220;
-    private static final int STROKE = 0x4460708A;
-    private static final int STROKE_SOFT = 0x223E4C61;
-    private static final int TEXT = 0xFFFFFFFF;
-    private static final int MUTED = 0xFFC4CBD7;
-    private static final int MUTED_2 = 0xFF8EA0B8;
-    private static final int GREEN = 0xFF22C55E;
-    private static final int WARN = 0xFFFFB020;
+    static final int BG = 0xFF030712;
+    static final int BG_2 = 0xFF071021;
+    static final int CARD = 0xFF101827;
+    static final int CARD_TOP = 0xFF18233A;
+    static final int CARD_2 = 0xFF1A2538;
+    static final int FIELD = 0xFF0B1220;
+    static final int STROKE = 0x4460708A;
+    static final int STROKE_SOFT = 0x223E4C61;
+    static final int TEXT = 0xFFFFFFFF;
+    static final int MUTED = 0xFFC4CBD7;
+    static final int MUTED_2 = 0xFF8EA0B8;
+    static final int GREEN = 0xFF22C55E;
+    static final int WARN = 0xFFFFB020;
 
     private Prefs prefs;
     private LinearLayout root;
@@ -85,7 +78,6 @@ public class MainActivity extends Activity {
     private Switch enableSwitch;
     private Switch onlyTriggerSwitch;
     private Switch englishUiSwitch;
-    private ArrayList<AppInfo> installedAppsCache;
 
     @Override public void onCreate(Bundle b) {
         super.onCreate(b);
@@ -127,15 +119,25 @@ public class MainActivity extends Activity {
         addSettingsCard();
         addPermissionsCard();
         addDiagnosticsCard();
+        addSupportCard();
     }
 
     private void addStatusCard() {
         LinearLayout c = card(tr("Состояние", "Status"), tr("Короткая сводка по движку, разрешениям и активным приложениям.", "A short summary of the engine, permissions and active apps."));
         statusView = tv("", 16, TEXT, Typeface.BOLD, Gravity.START);
+        statusView.setGravity(Gravity.CENTER);
+        statusView.setTextAlignment(View.TEXT_ALIGNMENT_CENTER);
         statusView.setLineSpacing(Ui.dp(this, 4), 1.0f);
         statusView.setBackground(Ui.stroke(FIELD, 1, STROKE_SOFT, 18, this));
         Ui.pad(statusView, 16, 14, 16, 14);
         c.addView(statusView, smallGapLp());
+        Button appStateButton = previewButton(tr("Подробнее", "Details"), v -> showAppStateDialog());
+        appStateButton.setTextSize(14);
+        appStateButton.setMinHeight(0);
+        appStateButton.setMinimumHeight(0);
+        LinearLayout.LayoutParams appStateLp = new LinearLayout.LayoutParams(-1, Ui.dp(this, 44));
+        appStateLp.setMargins(0, Ui.dp(this, 10), 0, 0);
+        c.addView(appStateButton, appStateLp);
     }
 
     private void addMainCard() {
@@ -157,12 +159,12 @@ public class MainActivity extends Activity {
 
     private void addAppsCard() {
         LinearLayout c = card(tr("Приложения", "Apps"), tr("Выбор навигаторов и плееров вынесен в отдельные аккуратные списки.", "Choose navigation apps and music players in separate lists."));
-        c.addView(menuButton(tr("Приложения навигации", "Navigation apps"), tr("Где показывать окно", "Where the window may appear"), v -> showAppDialog(APP_MODE_TRIGGERS)), smallGapLp());
-        c.addView(menuButton(tr("Аудио приложения", "Audio apps"), tr("Откуда брать название трека", "Where track data comes from"), v -> showAppDialog(APP_MODE_PLAYERS)), smallGapLp());
+        c.addView(menuButton(tr("Приложения навигации", "Navigation apps"), tr("Где показывать окно", "Where the window may appear"), v -> AppSelectionDialogHelper.show(this, prefs, AppSelectionDialogHelper.MODE_TRIGGERS)), smallGapLp());
+        c.addView(menuButton(tr("Аудио приложения", "Audio apps"), tr("Откуда брать название трека", "Where track data comes from"), v -> AppSelectionDialogHelper.show(this, prefs, AppSelectionDialogHelper.MODE_PLAYERS)), smallGapLp());
         c.addView(menuButton(
                 tr("Приложения с приоритетным окном", "Priority overlay apps"),
                 tr("Антирадар и другие приложения, чьи собственные окна должны временно иметь приоритет", "Radar and similar apps whose own windows should temporarily take priority"),
-                v -> showConflictAppsDialog()), smallGapLp());
+                v -> AppSelectionDialogHelper.show(this, prefs, AppSelectionDialogHelper.MODE_CONFLICTS)), smallGapLp());
     }
 
     private void addSettingsCard() {
@@ -190,8 +192,26 @@ public class MainActivity extends Activity {
         }), smallGapLp());
         c.addView(menuButton(tr("Проверить и восстановить", "Check and recover"), tr("Откроет нужные настройки только если правда есть проблема", "Opens the needed settings only if there is a real problem"), v -> checkAndRecover()), smallGapLp());
         c.addView(menuButton(tr("Скопировать отчёт", "Copy report"), tr("Собрать статусы разрешений, навигатора и музыки", "Collect permission, navigator and music status"), v -> copyDiagnosticsReport()), smallGapLp());
-        c.addView(menuButton(tr("История последних треков", "Recent track history"), tr("Открыть список последних 30 треков и быстро копировать названия", "Open the latest 30 tracks and quickly copy song names"), v -> showRecentTrackHistoryDialog()), smallGapLp());
-        c.addView(menuButton(tr("Инструкция", "Instructions"), tr("Коротко о том, что делает каждая функция приложения", "Short guide explaining what each app function does"), v -> showInstructionsDialog()), smallGapLp());
+        c.addView(menuButton(tr("История последних треков", "Recent track history"), tr("Открыть список последних 30 треков и быстро копировать названия", "Open the latest 30 tracks and quickly copy song names"), v -> InfoDialogsHelper.showRecentTrackHistoryDialog(this, prefs)), smallGapLp());
+        c.addView(menuButton(tr("Описание функций", "Feature descriptions"), tr("Коротко о том, что делает каждая функция приложения", "Short guide explaining what each app function does"), v -> InfoDialogsHelper.showInstructionsDialog(this, prefs)), smallGapLp());
+        c.addView(menuButton(
+                tr("Инструкция по настройкам", "Setup instructions"),
+                tr("Что нужно включить для корректной и стабильной работы приложения", "What to enable for correct and stable app operation"),
+                v -> InfoDialogsHelper.showSetupInstructionsDialog(this, prefs)), smallGapLp());
+    }
+
+    private void addSupportCard() {
+        LinearLayout c = card(
+                tr("Поддержка автора", "Support the author"),
+                tr("Если приложение оказалось полезным, то Вы можете поддержать его развитие и автора проекта.", "If the app turned out to be useful, you can support its development and the author of the project."));
+        c.addView(previewButton(tr("Выразить благодарность", "Show appreciation"), v -> {
+            try {
+                Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse("https://yoomoney.ru/to/4100119532290079"));
+                startActivity(intent);
+            } catch (Throwable t) {
+                Toast.makeText(this, tr("Не удалось открыть ссылку", "Failed to open the link"), Toast.LENGTH_SHORT).show();
+            }
+        }), btnLp());
     }
 
     private interface BoolCb { void set(boolean b); }
@@ -211,321 +231,6 @@ public class MainActivity extends Activity {
         row.addView(sw, new LinearLayout.LayoutParams(Ui.dp(this, 56), -2));
         parent.addView(row, smallGapLp());
         return sw;
-    }
-
-    private void showAppDialog(int mode) {
-        boolean triggers = mode == APP_MODE_TRIGGERS;
-        boolean players = mode == APP_MODE_PLAYERS;
-        final Dialog dialog = fullDialog();
-        LinearLayout box = dialogRoot();
-        dialog.setContentView(box);
-
-        box.addView(tv(tr(
-                mode == APP_MODE_TRIGGERS ? "Приложения навигации" : (players ? "Аудио приложения" : "Приложения с приоритетным окном"),
-                mode == APP_MODE_TRIGGERS ? "Navigation apps" : (players ? "Audio apps" : "Priority overlay apps")
-        ), 24, TEXT, Typeface.BOLD, Gravity.CENTER), matchWrap());
-        box.addView(tv(tr(
-                mode == APP_MODE_TRIGGERS
-                        ? "Выбери приложения, поверх которых можно показывать окно."
-                        : (players
-                            ? "Выбери плееры, откуда брать название трека."
-                            : "Выбери приложения, чьи собственные окна должны временно иметь приоритет над overlay."),
-                mode == APP_MODE_TRIGGERS
-                        ? "Choose apps over which the window may appear."
-                        : (players
-                            ? "Choose players used for track metadata."
-                            : "Choose apps whose own windows should temporarily take priority over the overlay.")
-        ), 14, MUTED, Typeface.NORMAL, Gravity.CENTER), matchWrap());
-        space(box, 14);
-
-        EditText search = new EditText(this);
-        search.setHint(tr("Поиск по названию или пакету", "Search by label or package"));
-        search.setSingleLine(true);
-        search.setTextColor(TEXT);
-        search.setHintTextColor(0xFF7F8EA3);
-        search.setTextSize(16);
-        search.setBackground(Ui.stroke(FIELD, 1, STROKE, 18, this));
-        Ui.pad(search, 14, 12, 14, 12);
-        box.addView(search, matchWrap());
-
-        LinearLayout quick = new LinearLayout(this);
-        quick.setOrientation(LinearLayout.HORIZONTAL);
-        quick.setGravity(Gravity.CENTER);
-        quick.setClipChildren(false);
-        quick.setClipToPadding(false);
-        quick.setPadding(0, 0, 0, Ui.dp(this, 2));
-        quick.addView(secondaryButton(tr(
-                mode == APP_MODE_TRIGGERS ? "Яндекс + карты" : (players ? "Популярные плееры" : "Полезные примеры"),
-                mode == APP_MODE_TRIGGERS ? "Yandex + maps" : (players ? "Popular players" : "Useful examples")
-        ), null), quickButtonLp(1));
-        quick.addView(secondaryButton(tr("Очистить", "Clear"), null), quickButtonLp(1));
-        Button popular = (Button) quick.getChildAt(0);
-        Button clear = (Button) quick.getChildAt(1);
-        popular.setTextSize(triggers ? 14 : 13);
-        popular.setGravity(Gravity.CENTER);
-        popular.setMaxLines(2);
-        popular.setSingleLine(false);
-        popular.setEllipsize(null);
-        clear.setGravity(Gravity.CENTER);
-        clear.setMaxLines(1);
-        clear.setSingleLine(true);
-        LinearLayout.LayoutParams quickLp = smallGapLp();
-        quickLp.bottomMargin = Ui.dp(this, 6);
-        box.addView(quick, quickLp);
-
-        LinearLayout manualRow = new LinearLayout(this);
-        manualRow.setOrientation(LinearLayout.HORIZONTAL);
-        manualRow.setGravity(Gravity.CENTER_VERTICAL);
-        EditText manualPackage = new EditText(this);
-        manualPackage.setHint(tr("Добавить пакет вручную", "Add package manually"));
-        manualPackage.setSingleLine(true);
-        manualPackage.setTextColor(TEXT);
-        manualPackage.setHintTextColor(0xFF7F8EA3);
-        manualPackage.setTextSize(14);
-        manualPackage.setBackground(Ui.stroke(FIELD, 1, STROKE, 16, this));
-        Ui.pad(manualPackage, 12, 10, 12, 10);
-        manualRow.addView(manualPackage, new LinearLayout.LayoutParams(0, Ui.dp(this, 48), 1));
-        Button addManual = secondaryButton(tr("Добавить", "Add"), null);
-        LinearLayout.LayoutParams addManualLp = new LinearLayout.LayoutParams(Ui.dp(this, 112), Ui.dp(this, 48));
-        addManualLp.leftMargin = Ui.dp(this, 10);
-        manualRow.addView(addManual, addManualLp);
-        LinearLayout.LayoutParams manualRowLp = smallGapLp();
-        manualRowLp.topMargin = Ui.dp(this, 0);
-        manualRowLp.bottomMargin = Ui.dp(this, 8);
-        box.addView(manualRow, manualRowLp);
-
-        ScrollView sv = new ScrollView(this);
-        LinearLayout list = new LinearLayout(this);
-        list.setOrientation(LinearLayout.VERTICAL);
-        sv.addView(list);
-        box.addView(sv, new LinearLayout.LayoutParams(-1, 0, 1));
-
-        Button done = primaryButton(tr("Готово", "Done"), v -> dialog.dismiss());
-        box.addView(done, btnLp());
-
-        final Runnable[] render = new Runnable[1];
-        render[0] = () -> renderApps(list, search.getText().toString(), mode);
-        search.addTextChangedListener(new TextWatcher() {
-            public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
-            public void onTextChanged(CharSequence s, int start, int before, int count) { render[0].run(); }
-            public void afterTextChanged(Editable s) {}
-        });
-        popular.setOnClickListener(v -> {
-            Set<String> s = mode == APP_MODE_TRIGGERS ? prefs.triggers() : (players ? prefs.players() : prefs.conflictApps());
-            if (mode == APP_MODE_TRIGGERS) Collections.addAll(s, Constants.DEFAULT_TRIGGER_PACKAGES);
-            else if (players) Collections.addAll(s, Constants.DEFAULT_PLAYER_PACKAGES);
-            else {
-                s.add("com.smart.driver.antiradar");
-                s.add("com.antiradar");
-            }
-            saveAppSelection(mode, s);
-            render[0].run();
-        });
-        clear.setOnClickListener(v -> { saveAppSelection(mode, new HashSet<String>()); render[0].run(); });
-        addManual.setOnClickListener(v -> {
-            String pkg = manualPackage.getText().toString().trim();
-            if (pkg.length() < 3 || !pkg.contains(".")) {
-                Toast.makeText(this, tr("Введите packageName, например ru.yandex.music", "Enter packageName, for example ru.yandex.music"), Toast.LENGTH_SHORT).show();
-                return;
-            }
-            Set<String> s = mode == APP_MODE_TRIGGERS ? prefs.triggers() : (players ? prefs.players() : prefs.conflictApps());
-            s.add(pkg);
-            saveAppSelection(mode, s);
-            manualPackage.setText("");
-            render[0].run();
-        });
-        render[0].run();
-        dialog.show();
-        fitDialog(dialog, true);
-    }
-
-    private void renderApps(LinearLayout list, String q, int mode) {
-        list.removeAllViews();
-        String query = q == null ? "" : q.trim().toLowerCase(Locale.ROOT);
-        Set<String> selected = mode == APP_MODE_TRIGGERS ? prefs.triggers() : (mode == APP_MODE_PLAYERS ? prefs.players() : prefs.conflictApps());
-        ArrayList<AppInfo> apps = loadApps(selected);
-        int count = 0;
-        for (AppInfo a : apps) {
-            if (!query.isEmpty()
-                    && !a.label.toLowerCase(Locale.ROOT).contains(query)
-                    && !a.packageName.toLowerCase(Locale.ROOT).contains(query)) continue;
-            CheckBox cb = new CheckBox(this);
-            cb.setText(a.label + "\n" + a.packageName);
-            cb.setTextColor(TEXT);
-            cb.setTextSize(15);
-            cb.setButtonTintList(android.content.res.ColorStateList.valueOf(prefs.accentColor()));
-            cb.setBackground(Ui.stroke(CARD_2, 1, 0x223A4658, 16, this));
-            cb.setChecked(selected.contains(a.packageName));
-            Ui.pad(cb, 12, 10, 12, 10);
-            cb.setOnCheckedChangeListener((v, on) -> {
-                Set<String> s = mode == APP_MODE_TRIGGERS ? prefs.triggers() : (mode == APP_MODE_PLAYERS ? prefs.players() : prefs.conflictApps());
-                if (on) s.add(a.packageName); else s.remove(a.packageName);
-                saveAppSelection(mode, s);
-            });
-            list.addView(cb, smallGapLp());
-            count++;
-        }
-        if (count == 0) list.addView(tv(tr("Ничего не найдено", "Nothing found"), 15, MUTED, Typeface.NORMAL, Gravity.CENTER), btnLp());
-    }
-
-    private void saveAppSelection(int mode, Set<String> values) {
-        if (mode == APP_MODE_TRIGGERS) prefs.setTriggers(values);
-        else if (mode == APP_MODE_PLAYERS) prefs.setPlayers(values);
-        else prefs.setConflictApps(values);
-    }
-
-    private void showConflictAppsDialog() {
-        showAppDialog(APP_MODE_CONFLICTS);
-    }
-
-    private void showRecentTrackHistoryDialog() {
-        final Dialog dialog = fullDialog();
-        LinearLayout outer = dialogRoot();
-        dialog.setContentView(outer);
-        outer.addView(tv(tr("История последних треков", "Recent track history"), 24, TEXT, Typeface.BOLD, Gravity.CENTER), matchWrap());
-        outer.addView(tv(tr("Последние 30 треков. Справа можно быстро скопировать название строки.", "Latest 30 tracks. Use the right-side button to quickly copy the full line."), 14, MUTED, Typeface.NORMAL, Gravity.CENTER), matchWrap());
-        space(outer, 12);
-
-        ScrollView sv = new ScrollView(this);
-        LinearLayout box = new LinearLayout(this);
-        box.setOrientation(LinearLayout.VERTICAL);
-        Ui.pad(box, 0, 0, 0, 18);
-        sv.addView(box, new ScrollView.LayoutParams(-1, -2));
-        outer.addView(sv, new LinearLayout.LayoutParams(-1, 0, 1));
-
-        List<Prefs.RecentTrack> tracks = prefs.recentTracks();
-        if (tracks.isEmpty()) {
-            box.addView(tv(tr("История пока пустая.", "History is empty for now."), 15, MUTED, Typeface.NORMAL, Gravity.CENTER), btnLp());
-        } else {
-            int shown = 0;
-            for (int i = tracks.size() - 1; i >= 0 && shown < 30; i--, shown++) {
-                Prefs.RecentTrack item = tracks.get(i);
-                LinearLayout row = new LinearLayout(this);
-                row.setOrientation(LinearLayout.HORIZONTAL);
-                row.setGravity(Gravity.CENTER_VERTICAL);
-                row.setBackground(Ui.stroke(CARD_2, 1, 0x223A4658, 16, this));
-                Ui.pad(row, 14, 12, 12, 12);
-
-                TextView text = tv((shown + 1) + ". " + item.display(), 15, TEXT, Typeface.NORMAL, Gravity.START);
-                text.setLineSpacing(Ui.dp(this, 2), 1.0f);
-                row.addView(text, new LinearLayout.LayoutParams(0, -2, 1));
-
-                Button copy = secondaryButton(tr("Копировать", "Copy"), v -> {
-                    ClipboardManager cm = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
-                    if (cm != null) cm.setPrimaryClip(ClipData.newPlainText("track", item.display()));
-                    Toast.makeText(this, tr("Трек скопирован", "Track copied"), Toast.LENGTH_SHORT).show();
-                });
-                LinearLayout.LayoutParams copyLp = new LinearLayout.LayoutParams(Ui.dp(this, 112), Ui.dp(this, 42));
-                copyLp.leftMargin = Ui.dp(this, 10);
-                row.addView(copy, copyLp);
-                box.addView(row, smallGapLp());
-            }
-        }
-
-        outer.addView(secondaryButton(tr("Готово", "Done"), v -> dialog.dismiss()), btnLp());
-        dialog.show();
-        fitDialog(dialog, true);
-    }
-
-    private void showInstructionsDialog() {
-        final Dialog dialog = fullDialog();
-        LinearLayout outer = dialogRoot();
-        dialog.setContentView(outer);
-        outer.addView(tv(tr("Инструкция", "Instructions"), 24, TEXT, Typeface.BOLD, Gravity.CENTER), matchWrap());
-        outer.addView(tv(tr("Короткое описание всех важных функций приложения простыми словами.", "A short plain-language description of the app’s important functions."), 14, MUTED, Typeface.NORMAL, Gravity.CENTER), matchWrap());
-        space(outer, 12);
-
-        ScrollView sv = new ScrollView(this);
-        LinearLayout box = new LinearLayout(this);
-        box.setOrientation(LinearLayout.VERTICAL);
-        Ui.pad(box, 0, 0, 0, 18);
-        sv.addView(box, new ScrollView.LayoutParams(-1, -2));
-        outer.addView(sv, new LinearLayout.LayoutParams(-1, 0, 1));
-
-        addInstructionItem(box, tr("Включить приложение", "Enable app"), tr("Полностью включает или отключает работу Navi Overlay.", "Fully enables or disables Navi Overlay."));
-        addInstructionItem(box, tr("Показывать только поверх выбранных приложений", "Show only over selected apps"), tr("Окно будет показываться только поверх выбранных навигаторов.", "The window will appear only over the selected navigation apps."));
-        addInstructionItem(box, tr("Приложения навигации", "Navigation apps"), tr("Список навигаторов, поверх которых может показываться окно.", "List of navigation apps where the window may appear."));
-        addInstructionItem(box, tr("Аудио приложения", "Audio apps"), tr("Список плееров, из которых брать название трека и обложку.", "List of players used for track title and album art."));
-        addInstructionItem(box, tr("Приложения с приоритетным окном", "Priority overlay apps"), tr("Если у этих приложений появляется своё окно, Navi Overlay временно уступает ему место.", "If these apps show their own window, Navi Overlay temporarily gives it priority."));
-        addInstructionItem(box, tr("Настройки текста", "Text settings"), tr("Размер, тень, выравнивание, шрифт и жирность текста в окне.", "Size, shadow, alignment, font and bold style of the text in the window."));
-        addInstructionItem(box, tr("Настройки окна", "Window settings"), tr("Прозрачность, форма, отступы, время показа, положение окна и поведение при паузе.", "Transparency, border shape, offsets, display time, position and pause behavior."));
-        addInstructionItem(box, tr("Настройки цвета", "Color settings"), tr("Меняет цвета окна, рамки, текста, полосы перемотки и других элементов.", "Changes the colors of the window, border, text, seek bar and other elements."));
-        addInstructionItem(box, tr("Положение окна", "Window position"), tr("Переносит окно в один из стандартных углов или в центр экрана.", "Moves the window to one of the standard corners or to the center of the screen."));
-        addInstructionItem(box, tr("Пресет дизайна", "Design preset"), tr("Быстро меняет общий стиль окна: форму, плотность и характер рамки.", "Quickly changes the overall window style: shape, density and border character."));
-        addInstructionItem(box, tr("Настройка кнопок управления музыкой", "Music control buttons settings"), tr("Размер, форма и расстояние между кнопками назад, пауза и вперёд.", "Size, shape and spacing of previous, pause and next buttons."));
-        addInstructionItem(box, tr("Поведение окна при паузе", "Window behavior on pause"), tr("Определяет, скрывать ли окно на паузе, оставлять его или убирать с задержкой.", "Defines whether the window hides on pause, stays visible, or hides after a short delay."));
-        addInstructionItem(box, tr("Разрешения", "Permissions"), tr("Раздел для выдачи системных разрешений, без которых окно и распознавание музыки не смогут работать стабильно.", "Section for granting the system permissions required for stable overlay and music detection."));
-        addInstructionItem(box, tr("Поверх окон", "Draw over apps"), tr("Разрешение на показ окна поверх навигатора и других приложений.", "Permission to show the window over navigation and other apps."));
-        addInstructionItem(box, tr("Доступ к уведомлениям", "Notification access"), tr("Нужен для чтения уведомлений плееров и получения информации о треках.", "Required to read player notifications and obtain track information."));
-        addInstructionItem(box, tr("Уведомления приложения", "App notifications"), tr("Дополнительное разрешение Android 13+, чтобы само приложение могло показывать свои уведомления.", "Extra Android 13+ permission so the app can show its own notifications."));
-        addInstructionItem(box, tr("Специальные возможности", "Accessibility"), tr("Помогают точнее понимать, что сейчас находится на экране магнитолы или телефона.", "Helps the app more accurately understand what is currently on the screen."));
-        addInstructionItem(box, tr("История использования", "Usage access"), tr("Запасной способ определить активное приложение, если системный экран меняется нестандартно.", "Fallback way to detect the active app if the system screen changes in a non-standard way."));
-        addInstructionItem(box, tr("Диагностика", "Diagnostics"), tr("Помогает понять, почему окно не появляется, и позволяет быстро скопировать отчёт.", "Helps you understand why the window does not appear and lets you quickly copy a report."));
-        addInstructionItem(box, tr("Показывать окно постоянно", "Show window continuously"), tr("Окно не скрывается по таймеру, пока трек считается активным.", "The window does not hide by timer while the track is considered active."));
-        addInstructionItem(box, tr("Полоса перемотки трека", "Track seek bar"), tr("Появляется под текстом и позволяет перематывать трек пальцем. Работает только вместе с постоянным показом и только там, где плеер поддерживает перемотку.", "Appears under the text and lets you seek the track with your finger. Works only with continuous display and only where the player supports seeking."));
-        addInstructionItem(box, tr("Показывать обложку в окне", "Show album art in the window"), tr("Добавляет обложку слева от текста, если плеер действительно передаёт картинку трека.", "Adds album art to the left of the text if the player actually provides track artwork."));
-        addInstructionItem(box, tr("Тапы по обложке", "Album art taps"), tr("Если обложка включена и кнопки управления выключены, одиночный тап ставит музыку на паузу, а двойной тап открывает текущий плеер.", "If album art is enabled and control buttons are disabled, a single tap pauses the music and a double tap opens the current player."));
-        addInstructionItem(box, tr("Кнопки управления музыкой в overlay", "Media control buttons in overlay"), tr("Добавляет в окно кнопки назад, пауза и вперёд прямо поверх навигатора.", "Adds previous, pause and next buttons directly inside the window over navigation."));
-        addInstructionItem(box, tr("Свайп по overlay: влево/вправо переключает треки", "Swipe on overlay: left/right switches tracks"), tr("Позволяет перелистывать треки быстрым движением по самому окну.", "Lets you switch tracks with a quick swipe directly on the window."));
-        addInstructionItem(box, tr("Snap: магнит к краям и центру после перетаскивания", "Snap: magnet to edges and center after dragging"), tr("После перетаскивания окно само прилипает к удобным зонам экрана.", "After dragging, the window automatically snaps to convenient screen zones."));
-        addInstructionItem(box, tr("При изменении громкости временно приглушать окно", "Temporarily dim the window on volume change"), tr("Во время регулировки громкости окно становится менее заметным и потом возвращает обычную яркость.", "While adjusting volume, the window becomes less visible and then returns to normal brightness."));
-        addInstructionItem(box, tr("Floating режим: показывать трек даже без навигатора", "Floating mode: show the track even without navigation"), tr("Разрешает показывать окно даже тогда, когда навигатор не открыт.", "Allows the window to appear even when navigation is not open."));
-        addInstructionItem(box, tr("Сворачивать окно вместе с навигацией", "Hide the window together with navigation"), tr("Когда навигация уходит с экрана, overlay тоже прячется.", "When navigation leaves the screen, the overlay hides as well."));
-        addInstructionItem(box, tr("Фиксированный размер окна", "Fixed window size"), tr("Фиксирует ширину окна и позволяет не зависеть от длины текста.", "Locks the window width so it does not depend on text length."));
-        addInstructionItem(box, tr("Мягкое восстановление после системных окон", "Soft recovery after system windows"), tr("Для проблемных магнитол. После громкости или чужих окон приложение восстанавливает overlay мягче и спокойнее.", "For problematic head units. After volume or other windows, the app restores the overlay more gently."));
-        addInstructionItem(box, tr("История последних треков", "Recent track history"), tr("Показывает последние 30 треков и позволяет быстро копировать названия.", "Shows the latest 30 tracks and lets you quickly copy track names."));
-        addInstructionItem(box, tr("Скопировать отчёт", "Copy report"), tr("Сохраняет технический отчёт в буфер обмена, чтобы проще было отправить его для разбора.", "Copies a technical report to the clipboard so it is easier to send for troubleshooting."));
-        addInstructionItem(box, tr("Проверить окно", "Preview window"), tr("Показывает тестовое окно на 5 секунд, чтобы быстро увидеть изменения.", "Shows a test window for 5 seconds so you can quickly preview changes."));
-        addInstructionItem(box, tr("Проверить и восстановить", "Check and recover"), tr("Открывает нужные настройки, если приложению реально не хватает разрешений.", "Opens the needed settings if the app is really missing permissions."));
-
-        outer.addView(secondaryButton(tr("Готово", "Done"), v -> dialog.dismiss()), btnLp());
-        dialog.show();
-        fitDialog(dialog, true);
-    }
-
-    private void addInstructionItem(LinearLayout parent, String title, String desc) {
-        LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.VERTICAL);
-        row.setBackground(Ui.stroke(CARD_2, 1, 0x223A4658, 16, this));
-        Ui.pad(row, 14, 12, 14, 12);
-        row.addView(tv(title, 15, TEXT, Typeface.BOLD, Gravity.START), matchWrap());
-        TextView hint = tv(desc, 13, MUTED, Typeface.NORMAL, Gravity.START);
-        hint.setLineSpacing(Ui.dp(this, 2), 1.0f);
-        row.addView(hint, matchWrap());
-        parent.addView(row, smallGapLp());
-    }
-
-    private ArrayList<AppInfo> loadApps(Set<String> selected) {
-        ArrayList<AppInfo> out = new ArrayList<>();
-        ArrayList<AppInfo> cached = ensureInstalledAppsCache();
-        HashSet<String> seen = new HashSet<>();
-        for (AppInfo item : cached) {
-            out.add(new AppInfo(item.label, item.packageName, selected.contains(item.packageName)));
-            seen.add(item.packageName);
-        }
-        for (String p : selected) {
-            if (p != null && !p.isEmpty() && !seen.contains(p)) out.add(new AppInfo(tr("Добавлено вручную", "Added manually"), p, true));
-        }
-        Collections.sort(out, (a, b) -> {
-            if (a.selected != b.selected) return a.selected ? -1 : 1;
-            return a.label.compareToIgnoreCase(b.label);
-        });
-        return out;
-    }
-
-    private ArrayList<AppInfo> ensureInstalledAppsCache() {
-        if (installedAppsCache != null) return installedAppsCache;
-        installedAppsCache = new ArrayList<>();
-        PackageManager pm = getPackageManager();
-        Intent i = new Intent(Intent.ACTION_MAIN, null);
-        i.addCategory(Intent.CATEGORY_LAUNCHER);
-        List<ResolveInfo> infos = pm.queryIntentActivities(i, 0);
-        for (ResolveInfo r : infos) {
-            String p = r.activityInfo.packageName;
-            String l = String.valueOf(r.loadLabel(pm));
-            installedAppsCache.add(new AppInfo(l, p, false));
-        }
-        return installedAppsCache;
     }
 
     private void showTextSettingsDialog() {
@@ -579,7 +284,13 @@ public class MainActivity extends Activity {
         addSeek(box, tr("Толщина рамки окна", "Window border thickness"), 0, 12, prefs.borderWidth(), v -> { prefs.setBorderWidth(v); TrackOverlayManager.refresh(this); });
         addSeek(box, tr("Горизонтальный отступ", "Horizontal offset"), 8, 48, prefs.paddingX(), v -> { prefs.setPaddingX(v); TrackOverlayManager.refresh(this); });
         addSeek(box, tr("Вертикальный отступ", "Vertical offset"), 6, 100, prefs.paddingY(), v -> { prefs.setPaddingY(v); TrackOverlayManager.refresh(this); });
-        addSeek(box, tr("Время показа, сек. 0 = не скрывать", "Display time, sec. 0 = do not hide"), 0, 10, prefs.displayMs() / 1000, v -> { prefs.setDisplayMs(v * 1000); TrackOverlayManager.refresh(this); });
+        addSeek(box, tr("Время показа, сек.", "Display time, sec."), 1, 10, Math.max(1, prefs.displayMs() / 1000), v -> { prefs.setDisplayMs(v * 1000); TrackOverlayManager.refresh(this); });
+        TextView displayHint = tv(
+                tr("Чтобы окно не скрывалось само, включи функцию «Показывать окно постоянно».", "To keep the window visible, enable “Show window continuously”."),
+                12, MUTED_2, Typeface.NORMAL, Gravity.START);
+        LinearLayout.LayoutParams displayHintLp = matchWrap();
+        displayHintLp.setMargins(Ui.dp(this, 8), Ui.dp(this, 2), Ui.dp(this, 8), 0);
+        box.addView(displayHint, displayHintLp);
         box.addView(menuButton(tr("Положение окна", "Window position"), tr("Выбор одного из стандартных положений окна", "Choose one of the standard window positions"), v -> showPositionDialog()), smallGapLp());
         box.addView(menuButton(tr("Пресет дизайна", "Design preset"), tr("Готовые стили формы и оформления overlay", "Ready-made overlay shape and style presets"), v -> showDesignPresetDialog()), smallGapLp());
         box.addView(menuButton(tr("Настройка кнопок управления музыкой", "Music control buttons settings"), tr("Размер, форма и расстояние между кнопками", "Size, shape and spacing of control buttons"), v -> showControlButtonsDialog()), smallGapLp());
@@ -645,11 +356,7 @@ public class MainActivity extends Activity {
         switchRow(box, tr("Floating режим: показывать трек даже без навигатора", "Floating mode: show the track even without navigation"), prefs.featureFloating(), on -> prefs.setFeatureFloating(on));
         switchRow(box, tr("Показывать обложку в окне", "Show album art in the window"), prefs.featureAlbumArt(), on -> { prefs.setFeatureAlbumArt(on); TrackOverlayManager.refresh(this); });
         switchRow(box, tr("Сворачивать окно вместе с навигацией", "Hide the window together with navigation"), prefs.featureHideWithNavigation(), on -> prefs.setFeatureHideWithNavigation(on));
-        Switch alwaysOnSwitch = switchRow(box, tr("Показывать окно постоянно", "Show window continuously"), prefs.displayWhilePlaying(), on -> {
-            prefs.setDisplayWhilePlaying(on);
-            if (!on && prefs.featureSeekBar()) prefs.setFeatureSeekBar(false);
-            TrackOverlayManager.refresh(this);
-        });
+        Switch alwaysOnSwitch = switchRow(box, tr("Показывать окно постоянно", "Show window continuously"), prefs.displayWhilePlaying(), on -> {});
         LinearLayout seekRow = new LinearLayout(this);
         seekRow.setOrientation(LinearLayout.HORIZONTAL);
         seekRow.setGravity(Gravity.CENTER_VERTICAL);
@@ -727,19 +434,39 @@ public class MainActivity extends Activity {
 
     private void showColorDialog(int target) {
         final Dialog dialog = fullDialog();
-        LinearLayout box = dialogRoot();
-        dialog.setContentView(box);
-        box.addView(tv(colorTargetTitle(target), 24, TEXT, Typeface.BOLD, Gravity.CENTER), matchWrap());
-        box.addView(tv(tr("Нажми на цвет — тестовое окно обновится сразу.", "Tap a color — the test window updates immediately."), 14, MUTED, Typeface.NORMAL, Gravity.CENTER), matchWrap());
-        space(box, 12);
+        LinearLayout outer = dialogRoot();
+        dialog.setContentView(outer);
+        outer.addView(tv(colorTargetTitle(target), 24, TEXT, Typeface.BOLD, Gravity.CENTER), matchWrap());
+        outer.addView(tv(tr("Нажми на цвет — тестовое окно обновится сразу.", "Tap a color — the test window updates immediately."), 14, MUTED, Typeface.NORMAL, Gravity.CENTER), matchWrap());
+        space(outer, 12);
+
+        ScrollView sv = new ScrollView(this);
+        sv.setFillViewport(false);
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        Ui.pad(box, 0, 0, 0, 18);
+        sv.addView(box, new ScrollView.LayoutParams(-1, -2));
+        outer.addView(sv, new LinearLayout.LayoutParams(-1, 0, 1));
+
+        box.addView(sectionHeader(tr("Текущий цвет", "Current color")), matchWrap());
+        View currentSwatch = new View(this);
+        currentSwatch.setBackground(Ui.stroke(currentColorForTarget(target), 1, 0x88FFFFFF, 8, this));
+        LinearLayout.LayoutParams currentLp = new LinearLayout.LayoutParams(Ui.dp(this, 120), Ui.dp(this, 22));
+        currentLp.gravity = Gravity.CENTER_HORIZONTAL;
+        currentLp.bottomMargin = Ui.dp(this, 10);
+        box.addView(currentSwatch, currentLp);
 
         GridLayout grid = new GridLayout(this);
         grid.setColumnCount(4);
         int[] colors = target == 0 ? windowPalette() : textPalette();
+        ArrayList<LinearLayout> cells = new ArrayList<>();
+        ArrayList<Integer> values = new ArrayList<>();
         for (int col : colors) {
             LinearLayout cell = new LinearLayout(this);
             cell.setOrientation(LinearLayout.VERTICAL);
             cell.setGravity(Gravity.CENTER);
+            cell.setBackground(Ui.stroke(CARD_2, 2, col == currentColorForTarget(target) ? prefs.accentColor() : STROKE_SOFT, 18, this));
+            Ui.pad(cell, 6, 6, 6, 6);
             TextView swatch = new TextView(this);
             swatch.setText(" ");
             swatch.setBackground(Ui.stroke(col, 2, 0x88FFFFFF, 16, this));
@@ -751,19 +478,27 @@ public class MainActivity extends Activity {
             lp.columnSpec = GridLayout.spec(GridLayout.UNDEFINED, 1f);
             lp.setMargins(Ui.dp(this, 5), Ui.dp(this, 6), Ui.dp(this, 5), Ui.dp(this, 6));
             grid.addView(cell, lp);
+            cells.add(cell);
+            values.add(col);
             cell.setOnClickListener(v -> {
                 if (target == 0) prefs.setBgColor(col);
                 else if (target == 1) prefs.setArtistColor(col);
                 else if (target == 2) prefs.setTitleColor(col);
                 else if (target == 3) prefs.setSeekBarColor(col);
                 else prefs.setSeekThumbColor(col);
+                currentSwatch.setBackground(Ui.stroke(col, 1, 0x88FFFFFF, 8, this));
+                int selectedColor = currentColorForTarget(target);
+                for (int i = 0; i < cells.size(); i++) {
+                    boolean selected = values.get(i) == selectedColor;
+                    cells.get(i).setBackground(Ui.stroke(CARD_2, 2, selected ? prefs.accentColor() : STROKE_SOFT, 18, this));
+                }
                 TrackOverlayManager.test(this);
             });
         }
         box.addView(grid, matchWrap());
-        box.addView(primaryButton(tr("Готово", "Done"), v -> dialog.dismiss()), btnLp());
+        outer.addView(primaryButton(tr("Готово", "Done"), v -> dialog.dismiss()), btnLp());
         dialog.show();
-        fitDialog(dialog, false);
+        fitDialog(dialog, true);
     }
 
     private String colorTargetTitle(int target) {
@@ -774,481 +509,93 @@ public class MainActivity extends Activity {
         return tr("Выбор цвета окна", "Window color");
     }
 
+    private int currentColorForTarget(int target) {
+        if (target == 1) return prefs.artistColor();
+        if (target == 2) return prefs.titleColor();
+        if (target == 3) return prefs.seekBarColor();
+        if (target == 4) return prefs.seekThumbColor();
+        return prefs.bgColor();
+    }
+
     private int[] textPalette() {
         return new int[]{0xFFFFFFFF, 0xFFE5E7EB, 0xFFCBD5E1, 0xFF94A3B8,
                 0xFF00D5FF, 0xFF38BDF8, 0xFF60A5FA, 0xFF818CF8,
                 0xFF22C55E, 0xFF84CC16, 0xFFFFD166, 0xFFFFA94D,
-                0xFFFF6B6B, 0xFFFF4D9D, 0xFFC084FC, 0xFF2DD4BF};
+                0xFFFF6B6B, 0xFFFF4D9D, 0xFFC084FC, 0xFF2DD4BF,
+                0xFFF8FAFC, 0xFFBAE6FD, 0xFF7DD3FC, 0xFF2563EB,
+                0xFFA3E635, 0xFFFBBF24, 0xFFFF8A65, 0xFFE9D5FF};
     }
 
     private int[] windowPalette() {
         return new int[]{0xFF020617, 0xFF0B1220, 0xFF111827, 0xFF1F2937,
                 0xFF0F172A, 0xFF172554, 0xFF082F49, 0xFF042F2E,
                 0xFF052E16, 0xFF3F2A05, 0xFF431407, 0xFF450A0A,
-                0xFF312E81, 0xFF4A044E, 0xFF1E1B4B, 0xFF18181B};
+                0xFF312E81, 0xFF4A044E, 0xFF1E1B4B, 0xFF18181B,
+                0xFF0F1C2E, 0xFF132A3A, 0xFF1B3A2F, 0xFF2A2116,
+                0xFF3B1F2B, 0xFF2D3748, 0xFF3A2F5D, 0xFF243447};
     }
 
-    private void showBorderColorDialog(boolean controls) {
-        final Dialog dialog = fullDialog();
-        LinearLayout box = dialogRoot();
-        dialog.setContentView(box);
-        box.addView(tv(controls ? tr("Цвет рамок кнопок", "Control border color") : tr("Цвет рамки окна", "Window border color"), 24, TEXT, Typeface.BOLD, Gravity.CENTER), matchWrap());
-        box.addView(tv(controls ? tr("Выбери цвет контура кнопок управления. Изменение видно сразу.", "Pick a border color for control buttons. Changes apply immediately.") : tr("Выбери цвет контура. Изменение видно сразу на тестовом окне.", "Pick a border color. The preview updates immediately."), 14, MUTED, Typeface.NORMAL, Gravity.CENTER), matchWrap());
-        space(box, 12);
+    private void showBorderColorDialog(boolean controls) { SettingsChoiceDialogsHelper.showBorderColorDialog(this, controls); }
 
-        GridLayout grid = new GridLayout(this);
-        grid.setColumnCount(4);
-        for (int col : borderPalette()) {
-            LinearLayout cell = new LinearLayout(this);
-            cell.setOrientation(LinearLayout.VERTICAL);
-            cell.setGravity(Gravity.CENTER);
-            TextView swatch = new TextView(this);
-            swatch.setText(" ");
-            swatch.setBackground(Ui.stroke(col, 2, 0xAAFFFFFF, 16, this));
-            LinearLayout.LayoutParams swLp = new LinearLayout.LayoutParams(Ui.dp(this, 54), Ui.dp(this, 54));
-            cell.addView(swatch, swLp);
-            GridLayout.LayoutParams lp = new GridLayout.LayoutParams();
-            lp.width = 0;
-            lp.height = -2;
-            lp.columnSpec = GridLayout.spec(GridLayout.UNDEFINED, 1f);
-            lp.setMargins(Ui.dp(this, 5), Ui.dp(this, 6), Ui.dp(this, 5), Ui.dp(this, 6));
-            grid.addView(cell, lp);
-            cell.setOnClickListener(v -> {
-                if (controls) prefs.setControlsBorderColor(col); else prefs.setBorderColor(col);
-                TrackOverlayManager.test(this);
-            });
-        }
-        box.addView(grid, matchWrap());
-        box.addView(primaryButton(tr("Готово", "Done"), v -> dialog.dismiss()), btnLp());
-        dialog.show();
-        fitDialog(dialog, false);
-    }
-
-    private int[] borderPalette() {
-        return new int[]{
-                0x00FFFFFF, 0x33FFFFFF, 0x66FFFFFF, 0xAAFFFFFF,
-                0xFF00D5FF, 0xFF38BDF8, 0xFF60A5FA, 0xFF818CF8,
-                0xFF22C55E, 0xFF84CC16, 0xFFFFD166, 0xFFFFA726,
-                0xFFFF6B6B, 0xFFFF4D9D, 0xFFC084FC, 0xFF2DD4BF
-        };
-    }
-
-    private void showFontDialog() {
-        final Dialog dialog = fullDialog();
-        LinearLayout outer = dialogRoot();
-        dialog.setContentView(outer);
-        outer.addView(tv(tr("Шрифт окна", "Window font"), 24, TEXT, Typeface.BOLD, Gravity.CENTER), matchWrap());
-        outer.addView(tv(tr("Выбери шрифт по образцу. Изменение применяется сразу к overlay.", "Choose a font by sample. Changes apply to the overlay immediately."), 14, MUTED, Typeface.NORMAL, Gravity.CENTER), matchWrap());
-        space(outer, 12);
-
-        ScrollView sv = new ScrollView(this);
-        LinearLayout box = new LinearLayout(this);
-        box.setOrientation(LinearLayout.VERTICAL);
-        Ui.pad(box, 0, 0, 0, 18);
-        sv.addView(box, new ScrollView.LayoutParams(-1, -2));
-        outer.addView(sv, new LinearLayout.LayoutParams(-1, 0, 1));
-
-        ArrayList<LinearLayout> rows = new ArrayList<>();
-        ArrayList<TextView> names = new ArrayList<>();
-        ArrayList<TextView> samples = new ArrayList<>();
-        ArrayList<TextView> hints = new ArrayList<>();
-
-        for (int i = 0; i < OverlayFonts.count(); i++) {
-            final int fontIndex = i;
-            LinearLayout row = new LinearLayout(this);
-            row.setOrientation(LinearLayout.VERTICAL);
-            row.setBackground(Ui.stroke(CARD_2, 1, fontIndex == prefs.textFont() ? prefs.accentColor() : 0x223A4658, 16, this));
-            Ui.pad(row, 16, 14, 16, 14);
-
-            TextView name = tv(OverlayFonts.nameAt(fontIndex), 16, fontIndex == prefs.textFont() ? prefs.accentColor() : TEXT, Typeface.BOLD, Gravity.START);
-            TextView sample = tv(tr("Пример / Example — АБВ abc", "Example / Пример — ABC абв"), 18, TEXT, Typeface.NORMAL, Gravity.START);
-            sample.setTypeface(OverlayFonts.resolve(this, fontIndex, prefs.textBold()));
-            sample.getPaint().setFakeBoldText(prefs.textBold());
-            TextView hint = tv(fontIndex == 0 ? tr("Системный шрифт Android", "Android system font") : tr("Образец для overlay", "Overlay sample"), 12, MUTED_2, Typeface.NORMAL, Gravity.START);
-
-            row.addView(name, matchWrap());
-            row.addView(sample, matchWrap());
-            row.addView(hint, matchWrap());
-            box.addView(row, smallGapLp());
-            rows.add(row);
-            names.add(name);
-            samples.add(sample);
-            hints.add(hint);
-
-            row.setOnClickListener(v -> {
-                prefs.setTextFont(fontIndex);
-                TrackOverlayManager.refresh(this);
-                for (int j = 0; j < rows.size(); j++) {
-                    boolean selected = j == prefs.textFont();
-                    rows.get(j).setBackground(Ui.stroke(CARD_2, 1, selected ? prefs.accentColor() : 0x223A4658, 16, this));
-                    names.get(j).setTextColor(selected ? prefs.accentColor() : TEXT);
-                    samples.get(j).setTypeface(OverlayFonts.resolve(this, j, prefs.textBold()));
-                    samples.get(j).getPaint().setFakeBoldText(prefs.textBold());
-                    hints.get(j).setText(selected
-                            ? tr("Выбранный шрифт overlay", "Selected overlay font")
-                            : (j == 0 ? tr("Системный шрифт Android", "Android system font") : tr("Образец для overlay", "Overlay sample")));
-                }
-            });
-        }
-
-        outer.addView(primaryButton(tr("Готово", "Done"), v -> dialog.dismiss()), btnLp());
-        dialog.show();
-        fitDialog(dialog, true);
-    }
-
-    private void showTextAlignmentDialog() {
-        final Dialog dialog = fullDialog();
-        LinearLayout outer = dialogRoot();
-        dialog.setContentView(outer);
-        outer.addView(tv(tr("Выравнивание текста", "Text alignment"), 24, TEXT, Typeface.BOLD, Gravity.CENTER), matchWrap());
-        outer.addView(tv(tr("Выбери, как выравнивать строку трека внутри окна.", "Choose how to align the track line inside the window."), 14, MUTED, Typeface.NORMAL, Gravity.CENTER), matchWrap());
-        space(outer, 12);
-
-        ScrollView sv = new ScrollView(this);
-        LinearLayout box = new LinearLayout(this);
-        box.setOrientation(LinearLayout.VERTICAL);
-        Ui.pad(box, 0, 0, 0, 18);
-        sv.addView(box, new ScrollView.LayoutParams(-1, -2));
-        outer.addView(sv, new LinearLayout.LayoutParams(-1, 0, 1));
-
-        String[] labels = new String[]{tr("Слева", "Left"), tr("По центру", "Center")};
-        int[] values = new int[]{Prefs.TEXT_ALIGN_LEFT, Prefs.TEXT_ALIGN_CENTER};
-        ArrayList<RadioButton> radios = new ArrayList<>();
-        int selected = prefs.textAlign();
-        for (int i = 0; i < labels.length; i++) {
-            final int value = values[i];
-            RadioButton rb = new RadioButton(this);
-            rb.setText(labels[i]);
-            rb.setTextColor(TEXT);
-            rb.setTextSize(16);
-            rb.setButtonTintList(android.content.res.ColorStateList.valueOf(prefs.accentColor()));
-            rb.setChecked(value == selected);
-            rb.setBackground(Ui.stroke(CARD_2, 1, 0x223A4658, 18, this));
-            Ui.pad(rb, 14, 12, 14, 12);
-            rb.setOnClickListener(v -> {
-                prefs.setTextAlign(value);
-                TrackOverlayManager.refresh(this);
-                for (RadioButton radio : radios) radio.setChecked(radio == rb);
-            });
-            radios.add(rb);
-            box.addView(rb, smallGapLp());
-        }
-        box.addView(previewButton(tr("Проверить окно", "Preview window"), v -> TrackOverlayManager.test(this)), btnLp());
-        outer.addView(secondaryButton(tr("Готово", "Done"), v -> dialog.dismiss()), btnLp());
-        dialog.show();
-        fitDialog(dialog, true);
-    }
-
-    private void showControlButtonsDialog() {
-        final Dialog dialog = fullDialog();
-        LinearLayout outer = dialogRoot();
-        dialog.setContentView(outer);
-        outer.addView(tv(tr("Настройка кнопок управления музыкой", "Music control buttons settings"), 24, TEXT, Typeface.BOLD, Gravity.CENTER), matchWrap());
-        outer.addView(tv(tr("Здесь можно настроить размер, форму и расстояние между кнопками управления.", "Set button size, shape and spacing here."), 14, MUTED, Typeface.NORMAL, Gravity.CENTER), matchWrap());
-        space(outer, 12);
-
-        ScrollView sv = new ScrollView(this);
-        LinearLayout box = new LinearLayout(this);
-        box.setOrientation(LinearLayout.VERTICAL);
-        Ui.pad(box, 0, 0, 0, 18);
-        sv.addView(box, new ScrollView.LayoutParams(-1, -2));
-        outer.addView(sv, new LinearLayout.LayoutParams(-1, 0, 1));
-
-        box.addView(menuButton(tr("Размер кнопок", "Button size"), tr("Маленькие, средние или крупные", "Small, medium or large"), v -> showControlButtonsSizeDialog()), smallGapLp());
-        box.addView(menuButton(tr("Форма кнопок", "Button shape"), tr("Круглые, прямоугольные, квадратные или без рамок", "Round, rectangular, square or borderless"), v -> showControlButtonsShapeDialog()), smallGapLp());
-        box.addView(menuButton(tr("Расстояние между кнопками", "Button spacing"), tr("Компактно, обычно или широко", "Compact, normal or wide"), v -> showControlButtonsSpacingDialog()), smallGapLp());
-        box.addView(previewButton(tr("Проверить окно", "Preview window"), v -> TrackOverlayManager.test(this)), btnLp());
-        outer.addView(secondaryButton(tr("Готово", "Done"), v -> dialog.dismiss()), btnLp());
-        dialog.show();
-        fitDialog(dialog, true);
-    }
-
-    private void showPauseBehaviorDialog() {
-        final Dialog dialog = fullDialog();
-        LinearLayout outer = dialogRoot();
-        dialog.setContentView(outer);
-        outer.addView(tv(tr("Поведение окна при паузе", "Window behavior on pause"), 24, TEXT, Typeface.BOLD, Gravity.CENTER), matchWrap());
-        outer.addView(tv(tr("Выбери, что делать с окном, если музыка остановилась на паузе.", "Choose what happens to the window when playback is paused."), 14, MUTED, Typeface.NORMAL, Gravity.CENTER), matchWrap());
-        space(outer, 12);
-
-        ScrollView sv = new ScrollView(this);
-        LinearLayout box = new LinearLayout(this);
-        box.setOrientation(LinearLayout.VERTICAL);
-        Ui.pad(box, 0, 0, 0, 18);
-        sv.addView(box, new ScrollView.LayoutParams(-1, -2));
-        outer.addView(sv, new LinearLayout.LayoutParams(-1, 0, 1));
-
-        String[] labels = new String[]{
-                tr("Оставлять окно", "Keep the window"),
-                tr("Скрывать окно", "Hide the window"),
-                tr("Оставлять ненадолго и потом скрывать", "Keep briefly, then hide")
-        };
-        int[] values = new int[]{Prefs.PAUSE_BEHAVIOR_KEEP, Prefs.PAUSE_BEHAVIOR_HIDE, Prefs.PAUSE_BEHAVIOR_SHORT};
-        ArrayList<RadioButton> radios = new ArrayList<>();
-        int selected = prefs.pauseBehavior();
-        for (int i = 0; i < labels.length; i++) {
-            final int value = values[i];
-            RadioButton rb = new RadioButton(this);
-            rb.setText(labels[i]);
-            rb.setTextColor(TEXT);
-            rb.setTextSize(16);
-            rb.setButtonTintList(android.content.res.ColorStateList.valueOf(prefs.accentColor()));
-            rb.setChecked(value == selected);
-            rb.setBackground(Ui.stroke(CARD_2, 1, 0x223A4658, 18, this));
-            Ui.pad(rb, 14, 12, 14, 12);
-            rb.setOnClickListener(v -> {
-                prefs.setPauseBehavior(value);
-                for (RadioButton radio : radios) radio.setChecked(radio == rb);
-            });
-            radios.add(rb);
-            box.addView(rb, smallGapLp());
-        }
-        outer.addView(secondaryButton(tr("Готово", "Done"), v -> dialog.dismiss()), btnLp());
-        dialog.show();
-        fitDialog(dialog, true);
-    }
-
-    private void showControlButtonsSizeDialog() {
-        showControlButtonsChoiceDialog(
-                tr("Размер кнопок", "Button size"),
-                tr("Выбери размер кнопок управления музыкой.", "Choose the size of media control buttons."),
-                new String[]{tr("Маленькие", "Small"), tr("Средние", "Medium"), tr("Крупные", "Large")},
-                new int[]{Prefs.CONTROLS_SIZE_SMALL, Prefs.CONTROLS_SIZE_MEDIUM, Prefs.CONTROLS_SIZE_LARGE},
-                prefs.controlsSize(),
-                value -> prefs.setControlsSize(value));
-    }
-
-    private void showControlButtonsShapeDialog() {
-        showControlButtonsChoiceDialog(
-                tr("Форма кнопок", "Button shape"),
-                tr("Выбери форму и рамку кнопок управления.", "Choose the shape and border style of control buttons."),
-                new String[]{tr("Круглые", "Round"), tr("Прямоугольные", "Rectangular"), tr("Квадратные", "Square"), tr("Без рамок", "Borderless")},
-                new int[]{Prefs.CONTROLS_SHAPE_ROUND, Prefs.CONTROLS_SHAPE_RECT, Prefs.CONTROLS_SHAPE_SQUARE, Prefs.CONTROLS_SHAPE_BORDERLESS},
-                prefs.controlsShape(),
-                value -> prefs.setControlsShape(value));
-    }
-
-    private void showControlButtonsSpacingDialog() {
-        showControlButtonsChoiceDialog(
-                tr("Расстояние между кнопками", "Button spacing"),
-                tr("Выбери, насколько кнопки должны быть разнесены друг от друга.", "Choose how far apart the buttons should be."),
-                new String[]{tr("Компактно", "Compact"), tr("Обычно", "Normal"), tr("Шире", "Wide")},
-                new int[]{Prefs.CONTROLS_SPACING_COMPACT, Prefs.CONTROLS_SPACING_NORMAL, Prefs.CONTROLS_SPACING_WIDE},
-                prefs.controlsSpacing(),
-                value -> prefs.setControlsSpacing(value));
-    }
-
-    private interface IntSetter { void set(int value); }
-
-    private void showControlButtonsChoiceDialog(String title, String subtitle, String[] labels, int[] values, int selected, IntSetter setter) {
-        final Dialog dialog = fullDialog();
-        LinearLayout outer = dialogRoot();
-        dialog.setContentView(outer);
-        outer.addView(tv(title, 24, TEXT, Typeface.BOLD, Gravity.CENTER), matchWrap());
-        outer.addView(tv(subtitle, 14, MUTED, Typeface.NORMAL, Gravity.CENTER), matchWrap());
-        space(outer, 12);
-
-        ScrollView sv = new ScrollView(this);
-        LinearLayout box = new LinearLayout(this);
-        box.setOrientation(LinearLayout.VERTICAL);
-        Ui.pad(box, 0, 0, 0, 18);
-        sv.addView(box, new ScrollView.LayoutParams(-1, -2));
-        outer.addView(sv, new LinearLayout.LayoutParams(-1, 0, 1));
-
-        ArrayList<RadioButton> radios = new ArrayList<>();
-        for (int i = 0; i < labels.length; i++) {
-            final int value = values[i];
-            RadioButton rb = new RadioButton(this);
-            rb.setText(labels[i]);
-            rb.setTextColor(TEXT);
-            rb.setTextSize(16);
-            rb.setButtonTintList(android.content.res.ColorStateList.valueOf(prefs.accentColor()));
-            rb.setChecked(value == selected);
-            rb.setBackground(Ui.stroke(CARD_2, 1, 0x223A4658, 18, this));
-            Ui.pad(rb, 14, 12, 14, 12);
-            rb.setOnClickListener(v -> {
-                setter.set(value);
-                TrackOverlayManager.refresh(this);
-                for (RadioButton radio : radios) radio.setChecked(radio == rb);
-            });
-            radios.add(rb);
-            box.addView(rb, smallGapLp());
-        }
-        box.addView(previewButton(tr("Проверить окно", "Preview window"), v -> TrackOverlayManager.test(this)), btnLp());
-        outer.addView(secondaryButton(tr("Готово", "Done"), v -> dialog.dismiss()), btnLp());
-        dialog.show();
-        fitDialog(dialog, true);
-    }
-
-    private void showPositionDialog() {
-        final Dialog dialog = fullDialog();
-        LinearLayout outer = dialogRoot();
-        dialog.setContentView(outer);
-        outer.addView(tv(tr("Положение окна", "Window position"), 24, TEXT, Typeface.BOLD, Gravity.CENTER), matchWrap());
-        outer.addView(tv(tr("Выбери стандартное положение окна. Изменение применяется сразу.", "Choose a standard window position. Changes apply immediately."), 14, MUTED, Typeface.NORMAL, Gravity.CENTER), matchWrap());
-        space(outer, 12);
-
-        ScrollView sv = new ScrollView(this);
-        LinearLayout box = new LinearLayout(this);
-        box.setOrientation(LinearLayout.VERTICAL);
-        Ui.pad(box, 0, 0, 0, 18);
-        sv.addView(box, new ScrollView.LayoutParams(-1, -2));
-        outer.addView(sv, new LinearLayout.LayoutParams(-1, 0, 1));
-
-        String[] labels = new String[]{
-                tr("Верх слева", "Top left"),
-                tr("Верх по центру", "Top center"),
-                tr("Верх справа", "Top right"),
-                tr("Центр", "Center"),
-                tr("Низ слева", "Bottom left"),
-                tr("Низ по центру", "Bottom center"),
-                tr("Низ справа", "Bottom right")
-        };
-        ArrayList<RadioButton> radios = new ArrayList<>();
-        int selected = prefs.position();
-
-        for (int i = 0; i < labels.length; i++) {
-            final int positionIndex = i;
-            RadioButton rb = new RadioButton(this);
-            rb.setText(labels[i]);
-            rb.setTextColor(TEXT);
-            rb.setTextSize(16);
-            rb.setButtonTintList(android.content.res.ColorStateList.valueOf(prefs.accentColor()));
-            rb.setChecked(positionIndex == selected);
-            rb.setBackground(Ui.stroke(CARD_2, 1, 0x223A4658, 18, this));
-            Ui.pad(rb, 14, 12, 14, 12);
-            rb.setOnClickListener(v -> {
-                prefs.setPosition(positionIndex);
-                TrackOverlayManager.refresh(this);
-                for (int j = 0; j < radios.size(); j++) radios.get(j).setChecked(j == positionIndex);
-            });
-            radios.add(rb);
-            box.addView(rb, smallGapLp());
-        }
-
-        box.addView(previewButton(tr("Проверить окно", "Preview window"), v -> TrackOverlayManager.test(this)), btnLp());
-        outer.addView(secondaryButton(tr("Готово", "Done"), v -> dialog.dismiss()), btnLp());
-        dialog.show();
-        fitDialog(dialog, true);
-    }
-
-    private void showDesignPresetDialog() {
-        final Dialog dialog = fullDialog();
-        LinearLayout outer = dialogRoot();
-        dialog.setContentView(outer);
-        outer.addView(tv(tr("Пресет дизайна", "Design preset"), 24, TEXT, Typeface.BOLD, Gravity.CENTER), matchWrap());
-        outer.addView(tv(tr("Выбери готовый стиль формы и оформления overlay. Изменение применяется сразу.", "Choose a ready-made overlay shape and style. Changes apply immediately."), 14, MUTED, Typeface.NORMAL, Gravity.CENTER), matchWrap());
-        space(outer, 12);
-
-        ScrollView sv = new ScrollView(this);
-        LinearLayout box = new LinearLayout(this);
-        box.setOrientation(LinearLayout.VERTICAL);
-        Ui.pad(box, 0, 0, 0, 18);
-        sv.addView(box, new ScrollView.LayoutParams(-1, -2));
-        outer.addView(sv, new LinearLayout.LayoutParams(-1, 0, 1));
-
-        String[] names = new String[]{
-                tr("Classic — как сейчас", "Classic — current look"),
-                tr("Minimal — тонкая тёмная плашка", "Minimal — slim dark plate"),
-                tr("Glass — плавные волны", "Glass — soft waves"),
-                tr("Car UI — авто-стиль", "Car UI — automotive style"),
-                tr("Soft — мягкая карточка", "Soft — soft card"),
-                tr("Contrast — контрастный стиль", "Contrast — contrast style"),
-                tr("Capsule — капсульная форма", "Capsule — capsule shape"),
-                tr("Premium — плотный тёмный стиль", "Premium — dense dark style"),
-                tr("Spikes — шипы", "Spikes — spikes"),
-                tr("Orbit — круглый стиль", "Orbit — round style")
-        };
-        ArrayList<RadioButton> radios = new ArrayList<>();
-        int selected = prefs.designPreset();
-
-        for (int i = 0; i < names.length; i++) {
-            final int presetIndex = i;
-            RadioButton rb = new RadioButton(this);
-            rb.setText(names[i]);
-            rb.setTextColor(TEXT);
-            rb.setTextSize(16);
-            rb.setButtonTintList(android.content.res.ColorStateList.valueOf(prefs.accentColor()));
-            rb.setChecked(presetIndex == selected);
-            rb.setBackground(Ui.stroke(CARD_2, 1, 0x223A4658, 18, this));
-            Ui.pad(rb, 14, 12, 14, 12);
-            rb.setOnClickListener(v -> {
-                prefs.setDesignPreset(presetIndex);
-                TrackOverlayManager.refresh(this);
-                for (int j = 0; j < radios.size(); j++) radios.get(j).setChecked(j == presetIndex);
-            });
-            radios.add(rb);
-            box.addView(rb, smallGapLp());
-        }
-
-        box.addView(previewButton(tr("Проверить окно", "Preview window"), v -> TrackOverlayManager.test(this)), btnLp());
-        outer.addView(secondaryButton(tr("Готово", "Done"), v -> dialog.dismiss()), btnLp());
-        dialog.show();
-        fitDialog(dialog, true);
-    }
+    private void showFontDialog() { SettingsChoiceDialogsHelper.showFontDialog(this); }
+    private void showTextAlignmentDialog() { SettingsChoiceDialogsHelper.showTextAlignmentDialog(this); }
+    private void showControlButtonsDialog() { SettingsChoiceDialogsHelper.showControlButtonsDialog(this); }
+    private void showPauseBehaviorDialog() { SettingsChoiceDialogsHelper.showPauseBehaviorDialog(this); }
+    private void showPositionDialog() { SettingsChoiceDialogsHelper.showPositionDialog(this); }
+    private void showDesignPresetDialog() { SettingsChoiceDialogsHelper.showDesignPresetDialog(this); }
 
     private void copyDiagnosticsReport() {
-        StringBuilder sb = new StringBuilder();
-        sb.append("Navi Overlay diagnostics\n");
-        sb.append("enabled=").append(prefs.enabled()).append("\n");
-        sb.append("overlay=").append(TrackOverlayManager.canDraw(this)).append("\n");
-        sb.append("notificationListener=").append(notificationAccessEnabled(this)).append("\n");
-        sb.append("postNotifications=").append(hasPostNotificationsPermission()).append("\n");
-        sb.append("accessibility=").append(ForegroundDetector.isAccessibilityEnabled(this)).append("\n");
-        sb.append("accessibilityServiceConnected=").append(NavigatorAccessibilityService.isServiceConnected()).append("\n");
-        sb.append("accessibilityConnectedAgeSec=").append(ageSeconds(NavigatorAccessibilityService.connectedAt())).append("\n");
-        sb.append("accessibilityLastEventAgeSec=").append(ageSeconds(NavigatorAccessibilityService.lastEventAt())).append("\n");
-        sb.append("accessibilityLastRootReadAgeSec=").append(ageSeconds(NavigatorAccessibilityService.lastRootReadAt())).append("\n");
-        sb.append("usageAccess=").append(ForegroundDetector.hasUsageAccess(this)).append("\n");
-        sb.append("persistedLastTrigger=").append(prefs.lastTriggerPackage()).append("\n");
-        sb.append("persistedLastTriggerAgeSec=").append(ageSeconds(prefs.lastTriggerAt())).append("\n");
-        sb.append("accessibilityPackage=").append(ForegroundState.get()).append("\n");
-        sb.append("usagePackage=").append(ForegroundDetector.debugCurrent(this)).append("\n");
-        try {
-            AppStateDetector.Result appState = new AppStateDetector(this).read();
-            sb.append("navigatorVisible=").append(appState.navigatorVisible).append("\n");
-            sb.append("foregroundPackage=").append(appState.foregroundPackage).append("\n");
-            sb.append("navReason=").append(appState.reason).append("\n");
-        } catch (Throwable t) { sb.append("appStateError=").append(t.getClass().getSimpleName()).append("\n"); }
-        try {
-            TrackSnapshot track = new MusicStateDetector(this).read();
-            sb.append("musicPlaying=").append(track.playing).append("\n");
-            sb.append("trackSourceType=").append(track.sourceType).append("\n");
-            sb.append("trackPackage=").append(track.sourcePackage).append("\n");
-            sb.append("artist=").append(track.artist).append("\n");
-            sb.append("title=").append(track.title).append("\n");
-            sb.append("featureControls=").append(prefs.featureControls()).append("\n");
-            sb.append("featureSwipeTracks=").append(prefs.featureSwipeTracks()).append("\n");
-            sb.append("featureSnap=").append(prefs.featureSnap()).append("\n");
-            sb.append("featureVolumeDim=").append(prefs.featureVolumeDim()).append("\n");
-            sb.append("featureFloating=").append(prefs.featureFloating()).append("\n");
-            sb.append("featureSoftRecoverySystemWindows=").append(prefs.featureSoftRecoverySystemWindows()).append("\n");
-            sb.append("featureSeekBar=").append(prefs.featureSeekBar()).append("\n");
-            sb.append("textAlign=").append(prefs.textAlign()).append("\n");
-            sb.append("conflictApps=").append(new ArrayList<>(prefs.conflictApps())).append("\n");
-            sb.append("controlsSize=").append(prefs.controlsSize()).append("\n");
-            sb.append("controlsShape=").append(prefs.controlsShape()).append("\n");
-            sb.append("controlsSpacing=").append(prefs.controlsSpacing()).append("\n");
-            sb.append("pauseBehavior=").append(prefs.pauseBehavior()).append("\n");
-            sb.append("designPreset=").append(prefs.designPreset()).append("\n");
-            sb.append("textFont=").append(OverlayFonts.nameAt(prefs.textFont())).append("\n");
-            sb.append("borderColor=#").append(Integer.toHexString(prefs.borderColor())).append("\n");
-            sb.append("borderWidth=").append(prefs.borderWidth()).append("\n");
-            sb.append("controlsBorderColor=#").append(Integer.toHexString(prefs.controlsBorderColor())).append("\n");
-            int index = 1;
-            for (Prefs.RecentTrack item : prefs.recentTracks()) {
-                sb.append("recentTrack").append(index++).append("=").append(item.display()).append("\n");
-            }
-        } catch (Throwable t) { sb.append("musicStateError=").append(t.getClass().getSimpleName()).append("\n"); }
+        AppStateDetector.Result appState = null;
+        String appStateError = "";
+        try { appState = new AppStateDetector(this).read(); } catch (Throwable t) { appStateError = t.getClass().getSimpleName(); }
+        TrackSnapshot track = null;
+        String musicStateError = "";
+        try { track = new MusicStateDetector(this).read(); } catch (Throwable t) { musicStateError = t.getClass().getSimpleName(); }
+        String report = DiagnosticsReportBuilder.build(
+                prefs,
+                TrackOverlayManager.canDraw(this),
+                notificationAccessEnabled(this),
+                com.navioverlay.car.services.MusicNotificationListenerService.hasFreshNotifications(),
+                com.navioverlay.car.services.MusicNotificationListenerService.hasUsableNotifications(),
+                com.navioverlay.car.services.MusicNotificationListenerService.latestNotificationsCount(),
+                AppRuntimeStatusHelper.ageMsToSeconds(com.navioverlay.car.services.MusicNotificationListenerService.latestNotificationsAgeMs()),
+                AppRuntimeStatusHelper.ageMsToSeconds(com.navioverlay.car.services.MusicNotificationListenerService.staleThresholdMs()),
+                AppRuntimeStatusHelper.ageMsToSeconds(com.navioverlay.car.services.MusicNotificationListenerService.fallbackStaleThresholdMs()),
+                hasPostNotificationsPermission(),
+                AppRuntimeStatusHelper.canScheduleExactAlarmsCompat(this),
+                ForegroundDetector.isAccessibilityEnabled(this),
+                NavigatorAccessibilityService.isServiceConnected(),
+                AppRuntimeStatusHelper.ageSecondsFromTimestamp(NavigatorAccessibilityService.connectedAt()),
+                AppRuntimeStatusHelper.ageSecondsFromTimestamp(NavigatorAccessibilityService.lastEventAt()),
+                AppRuntimeStatusHelper.ageSecondsFromTimestamp(NavigatorAccessibilityService.lastRootReadAt()),
+                ForegroundDetector.hasUsageAccess(this),
+                AppRuntimeStatusHelper.ageMsToSeconds(ForegroundState.ageMs()),
+                ForegroundState.lastTrigger(),
+                AppRuntimeStatusHelper.ageMsToSeconds(ForegroundState.lastTriggerAgeMs()),
+                ForegroundState.isTransientSystemWindow(),
+                ForegroundState.hasRecentTransientUi(),
+                AppRuntimeStatusHelper.ageMsToSeconds(ForegroundState.reverseCameraAgeMs()),
+                AppRuntimeStatusHelper.ageMsToSeconds(ForegroundState.volumeUiAgeMs()),
+                ForegroundState.get(),
+                ForegroundState.currentClass(),
+                ForegroundState.currentWindowHint(),
+                ForegroundDetector.debugCurrent(this),
+                appState,
+                AppRuntimeStatusHelper.isNavigatorRunningForStatus(this, prefs, appState),
+                appStateError,
+                track,
+                AppRuntimeStatusHelper.isMusicRunningForStatus(this, prefs, track, ForegroundState.get(), ForegroundDetector.currentByUsage(this)),
+                musicStateError,
+                TrackOverlayManager.lastSeekDebugReason(),
+                TrackOverlayManager.seekSessionHasRange(),
+                AppRuntimeStatusHelper.ageMsToSeconds(TrackOverlayManager.seekSessionDurationMs()),
+                AppRuntimeStatusHelper.ageMsToSeconds(TrackOverlayManager.seekSessionEstimatedPositionMs()),
+                TrackOverlayManager.albumArtWaitingForReal(),
+                TrackOverlayManager.albumArtRetryCount()
+        );
         ClipboardManager cm = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
-        if (cm != null) cm.setPrimaryClip(ClipData.newPlainText("Navi Overlay diagnostics", sb.toString()));
+        if (cm != null) cm.setPrimaryClip(ClipData.newPlainText("Navi Overlay diagnostics", report));
         Toast.makeText(this, tr("Диагностика скопирована", "Diagnostics copied"), Toast.LENGTH_SHORT).show();
-    }
-
-    private long ageSeconds(long ts) {
-        if (ts <= 0L) return -1L;
-        long delta = System.currentTimeMillis() - ts;
-        return Math.max(0L, delta / 1000L);
     }
 
     private void refreshStatus() {
@@ -1261,7 +608,7 @@ public class MainActivity extends Activity {
         // "Уведомления приложения" не должны ломать общий статус разрешений:
         // для Android 12 и ниже их физически нет, а для Android 13+ это отдельная
         // дополнительная опция, не критичная для базовой работы overlay-движка.
-        boolean allPerms = overlay && usage && acc && notif;
+        boolean allPerms = overlay && notif && (acc || usage);
 
         AppStateDetector.Result appState;
         try { appState = new AppStateDetector(this).read(); } catch (Throwable t) { appState = null; }
@@ -1269,22 +616,259 @@ public class MainActivity extends Activity {
         try { track = new MusicStateDetector(this).read(); } catch (Throwable t) { track = TrackSnapshot.empty(); }
 
         boolean enabled = prefs.enabled();
-        boolean navOk = appState != null && appState.navigatorVisible;
-        boolean musicOk = track != null && track.playing && track.hasText();
-
         SpannableStringBuilder sb = new SpannableStringBuilder();
-        appendStatusLine(sb, tr("Статус: ", "Status: "), enabled ? tr("Включено", "Enabled") : tr("Выключено", "Disabled"), enabled);
-        appendStatusLine(sb, tr("Разрешения: ", "Permissions: "), allPerms ? tr("Выданы", "Granted") : tr("Выданы не все", "Not all granted"), allPerms);
-        appendStatusLine(sb, tr("Навигатор: ", "Navigator: "), navOk ? tr("Запущен", "Running") : tr("Нет", "No"), navOk);
-        appendStatusLine(sb, tr("Музыка: ", "Music: "), musicOk ? tr("Запущена", "Running") : tr("Нет", "No"), musicOk);
+        appendStatusLine(sb, tr("Статус: ", "Status: "), enabled ? tr("Включено", "Enabled") : tr("Выключено", "Disabled"), enabled ? GREEN : 0xFFFF4D4D);
+        appendStatusLine(sb, tr("Разрешения: ", "Permissions: "), allPerms ? tr("Выданы", "Granted") : tr("Выданы не все", "Not all granted"), allPerms ? GREEN : WARN);
         if (enabled && acc && !accConnected) {
-            appendStatusLine(sb, tr("Сервис спец. возможностей: ", "Accessibility service: "), tr("Нет связи", "No connection"), false);
+            appendStatusLine(sb, tr("Сервис спец. возможностей: ", "Accessibility service: "), tr("Нет связи", "No connection"), 0xFFFF4D4D);
         }
         statusView.setText(sb);
         statusView.setTextColor(TEXT);
         if (enableSwitch != null && enableSwitch.isChecked() != prefs.enabled()) enableSwitch.setChecked(prefs.enabled());
         if (onlyTriggerSwitch != null && onlyTriggerSwitch.isChecked() != prefs.showOnlyWithTrigger()) onlyTriggerSwitch.setChecked(prefs.showOnlyWithTrigger());
         if (englishUiSwitch != null && englishUiSwitch.isChecked() != prefs.englishUi()) englishUiSwitch.setChecked(prefs.englishUi());
+    }
+
+    private String appLabelOrFallback(String pkg, String emptyText) {
+        if (pkg == null || pkg.isEmpty()) return emptyText;
+        try {
+            android.content.pm.ApplicationInfo info = getPackageManager().getApplicationInfo(pkg, 0);
+            CharSequence label = getPackageManager().getApplicationLabel(info);
+            String text = label == null ? "" : label.toString().trim();
+            return text.isEmpty() ? pkg : text;
+        } catch (Throwable ignored) {
+            return pkg;
+        }
+    }
+
+    private String formatAgeStatus(long ageMs, String emptyText) {
+        if (ageMs == Long.MAX_VALUE || ageMs < 0L) return emptyText;
+        long sec = Math.max(0L, ageMs / 1000L);
+        if (sec < 1L) return tr("Только что", "Just now");
+        if (sec < 60L) return sec + " " + tr("сек назад", "sec ago");
+        long minutes = sec / 60L;
+        if (minutes < 60L) return minutes + " " + minuteWord(minutes) + " " + tr("назад", "ago");
+        long hours = minutes / 60L;
+        long remainMinutes = minutes % 60L;
+        if (remainMinutes <= 0L) return hours + " " + hourWord(hours) + " " + tr("назад", "ago");
+        return hours + " " + hourWord(hours) + " " + remainMinutes + " " + minuteWord(remainMinutes) + " " + tr("назад", "ago");
+    }
+
+    private int ageColor(long ageMs, long freshMs, long warnMs) {
+        if (ageMs == Long.MAX_VALUE || ageMs < 0L) return 0xFFFF4D4D;
+        if (ageMs <= freshMs) return GREEN;
+        if (ageMs <= warnMs) return WARN;
+        return 0xFFFF4D4D;
+    }
+
+    private void showAppStateDialog() {
+        final Dialog dialog = fullDialog();
+        LinearLayout outer = dialogRoot();
+        dialog.setContentView(outer);
+
+        outer.addView(tv(tr("Состояние приложения", "Application status"), 24, TEXT, Typeface.BOLD, Gravity.CENTER), matchWrap());
+        outer.addView(tv(tr("Подробные статусы и текущие настройки приложения.", "Detailed runtime statuses and current app settings."), 14, MUTED, Typeface.NORMAL, Gravity.CENTER), matchWrap());
+        space(outer, 12);
+
+        ScrollView sv = new ScrollView(this);
+        sv.setFillViewport(false);
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        Ui.pad(box, 0, 0, 0, 18);
+        sv.addView(box, new ScrollView.LayoutParams(-1, -2));
+        outer.addView(sv, new LinearLayout.LayoutParams(-1, 0, 1));
+
+        AppStateDetector.Result appState;
+        try { appState = new AppStateDetector(this).read(); } catch (Throwable t) { appState = null; }
+        TrackSnapshot track;
+        try { track = new MusicStateDetector(this).read(); } catch (Throwable t) { track = TrackSnapshot.empty(); }
+
+        String usageCurrent = ForegroundDetector.currentByUsage(this);
+        String accessibilityCurrent = ForegroundState.get();
+        boolean musicPlaying = AppRuntimeStatusHelper.isMusicPlayingForStatus(prefs, track);
+        boolean musicRunning = AppRuntimeStatusHelper.isMusicRunningForStatus(this, prefs, track, accessibilityCurrent, usageCurrent);
+        String lastNavPkg = AppRuntimeStatusHelper.lastSeenNavigatorPackage(prefs, appState);
+        String lastPlayerPkg = AppRuntimeStatusHelper.lastSeenPlayerPackage(prefs, track, accessibilityCurrent, usageCurrent);
+
+        box.addView(sectionHeader(tr("Текущие статусы", "Current statuses")), matchWrap());
+        box.addView(infoRow(tr("Окно поверх приложений", "Draw over apps"), TrackOverlayManager.canDraw(this) ? tr("Разрешено", "Allowed") : tr("Не разрешено", "Not allowed"), TrackOverlayManager.canDraw(this) ? GREEN : 0xFFFF4D4D), smallGapLp());
+        box.addView(infoRow(tr("Доступ к уведомлениям", "Notification access"), notificationAccessEnabled(this) ? tr("Включен", "Enabled") : tr("Выключен", "Disabled"), notificationAccessEnabled(this) ? GREEN : 0xFFFF4D4D), smallGapLp());
+        box.addView(infoRow(tr("Уведомления приложения", "App notifications"), hasPostNotificationsPermission() ? tr("Разрешены", "Allowed") : tr("Не разрешены", "Not allowed"), hasPostNotificationsPermission() ? GREEN : WARN), smallGapLp());
+        box.addView(infoRow(tr("Спец. возможности", "Accessibility"), ForegroundDetector.isAccessibilityEnabled(this) ? tr("Включены", "Enabled") : tr("Выключены", "Disabled"), ForegroundDetector.isAccessibilityEnabled(this) ? GREEN : 0xFFFF4D4D), smallGapLp());
+        box.addView(infoRow(tr("История использования", "Usage access"), ForegroundDetector.hasUsageAccess(this) ? tr("Разрешена", "Allowed") : tr("Не разрешена", "Not allowed"), ForegroundDetector.hasUsageAccess(this) ? GREEN : WARN), smallGapLp());
+        box.addView(infoRow(tr("Служба спец. возможностей", "Accessibility service"), NavigatorAccessibilityService.isServiceConnected() ? tr("Подключена", "Connected") : tr("Нет связи", "No connection"), NavigatorAccessibilityService.isServiceConnected() ? GREEN : 0xFFFF4D4D), smallGapLp());
+        box.addView(infoRow(tr("Последний навигатор", "Last navigator"), appLabelOrFallback(lastNavPkg, tr("Нет данных", "No data")), lastNavPkg.isEmpty() ? 0xFFFF4D4D : TEXT), smallGapLp());
+        String persistedTrackPkg = prefs.lastSeenTrackPackage();
+        if (lastPlayerPkg.isEmpty()) lastPlayerPkg = persistedTrackPkg;
+        box.addView(infoRow(tr("Последний плеер", "Last player"), appLabelOrFallback(lastPlayerPkg, tr("Нет данных", "No data")), lastPlayerPkg.isEmpty() ? 0xFFFF4D4D : TEXT), smallGapLp());
+        String musicText = musicPlaying
+                ? tr("Да", "Yes")
+                : (musicRunning ? tr("Нет, но плеер открыт", "No, but player is open") : tr("Нет", "No"));
+        box.addView(infoRow(tr("Музыка сейчас играет", "Music playing now"), musicText, musicPlaying ? GREEN : (musicRunning ? WARN : 0xFFFF4D4D)), smallGapLp());
+        String lastTrackText;
+        int lastTrackColor;
+        if (track != null && track.hasText()) {
+            lastTrackText = track.artist.isEmpty() ? track.title : track.artist + " - " + track.title;
+            lastTrackColor = TEXT;
+        } else if (!prefs.lastSeenTrackTitle().isEmpty() || !prefs.lastSeenTrackArtist().isEmpty()) {
+            lastTrackText = prefs.lastSeenTrackArtist().isEmpty()
+                    ? prefs.lastSeenTrackTitle()
+                    : prefs.lastSeenTrackArtist() + " - " + prefs.lastSeenTrackTitle();
+            lastTrackColor = TEXT;
+        } else {
+            lastTrackText = tr("Нет данных", "No data");
+            lastTrackColor = 0xFFFF4D4D;
+        }
+        box.addView(infoRow(tr("Последний трек", "Last track"), lastTrackText, lastTrackColor), smallGapLp());
+        box.addView(infoRow(tr("Последнее системное окно", "Last system window"),
+                currentSystemWindowLabel(appState, prefs),
+                currentSystemWindowColor(appState, prefs)), smallGapLp());
+        long lastDataAgeMs = track != null && track.hasText()
+                ? System.currentTimeMillis() - track.readAt
+                : (prefs.lastSeenTrackAt() > 0L ? System.currentTimeMillis() - prefs.lastSeenTrackAt() : Long.MAX_VALUE);
+        box.addView(infoRow(tr("Последнее обновление данных", "Last data update"), formatAgeStatus(lastDataAgeMs, tr("Нет данных", "No data")), ageColor(lastDataAgeMs, 5_000L, 20_000L)), smallGapLp());
+
+        box.addView(sectionHeader(tr("Текущие настройки", "Current settings")), matchWrap());
+        box.addView(infoRow(tr("Размер текста", "Text size"), String.valueOf(prefs.textSize()), TEXT), smallGapLp());
+        box.addView(infoRow(tr("Шрифт", "Font"), OverlayFonts.nameAt(prefs.textFont()), TEXT), smallGapLp());
+        box.addView(infoRow(tr("Выравнивание текста", "Text alignment"), prefs.textAlign() == Prefs.TEXT_ALIGN_LEFT ? tr("Слева", "Left") : tr("По центру", "Center"), TEXT), smallGapLp());
+        box.addView(infoRow(tr("Прозрачность окна", "Window transparency"), prefs.windowAlpha() + "%", TEXT), smallGapLp());
+        box.addView(infoRow(tr("Время показа", "Display time"), prefs.displayWhilePlaying() ? tr("Постоянно", "Continuous") : (prefs.displayMs() / 1000) + " " + tr("сек", "sec"), TEXT), smallGapLp());
+        box.addView(infoRow(tr("Положение окна", "Window position"), positionName(prefs.selectedPosition()), TEXT), smallGapLp());
+        box.addView(infoRow(tr("Пресет дизайна", "Design preset"), String.valueOf(prefs.designPreset()), TEXT), smallGapLp());
+        box.addView(colorInfoRow(tr("Цвет окна", "Window color"), prefs.bgColor()), smallGapLp());
+        box.addView(colorInfoRow(tr("Цвет рамки окна", "Window border color"), prefs.borderColor()), smallGapLp());
+        box.addView(colorInfoRow(tr("Цвет рамок кнопок", "Control border color"), prefs.controlsBorderColor()), smallGapLp());
+        box.addView(colorInfoRow(tr("Цвет исполнителя", "Artist color"), prefs.artistColor()), smallGapLp());
+        box.addView(colorInfoRow(tr("Цвет названия песни", "Track title color"), prefs.titleColor()), smallGapLp());
+        box.addView(colorInfoRow(tr("Цвет полосы перемотки", "Seek bar color"), prefs.seekBarColor()), smallGapLp());
+        box.addView(colorInfoRow(tr("Цвет ползунка перемотки", "Seek thumb color"), prefs.seekThumbColor()), smallGapLp());
+        box.addView(infoRow(tr("Кнопки управления музыкой", "Music control buttons"), onOff(prefs.featureControls()), prefs.featureControls() ? GREEN : MUTED_2), smallGapLp());
+        box.addView(infoRow(tr("Обложка", "Album art"), onOff(prefs.featureAlbumArt()), prefs.featureAlbumArt() ? GREEN : MUTED_2), smallGapLp());
+        box.addView(infoRow(tr("Магнит окна", "Snap"), onOff(prefs.featureSnap()), prefs.featureSnap() ? GREEN : MUTED_2), smallGapLp());
+        box.addView(infoRow(tr("Приглушение при громкости", "Volume dim"), onOff(prefs.featureVolumeDim()), prefs.featureVolumeDim() ? GREEN : MUTED_2), smallGapLp());
+        box.addView(infoRow(tr("Показывать без навигатора", "Floating mode"), onOff(prefs.featureFloating()), prefs.featureFloating() ? GREEN : MUTED_2), smallGapLp());
+        box.addView(infoRow(tr("Фиксированный размер окна", "Fixed window size"), onOff(prefs.featureFixedWindow()), prefs.featureFixedWindow() ? GREEN : MUTED_2), smallGapLp());
+        box.addView(infoRow(tr("Мягкое восстановление", "Soft recovery"), onOff(prefs.featureSoftRecoverySystemWindows()), prefs.featureSoftRecoverySystemWindows() ? GREEN : MUTED_2), smallGapLp());
+        box.addView(infoRow(tr("Полоса перемотки", "Seek bar"), onOff(prefs.featureSeekBar()), prefs.featureSeekBar() ? GREEN : MUTED_2), smallGapLp());
+        box.addView(infoRow(tr("Поведение при паузе", "Pause behavior"), pauseBehaviorName(prefs.pauseBehavior()), TEXT), smallGapLp());
+
+        outer.addView(secondaryButton(tr("Готово", "Done"), v -> dialog.dismiss()), btnLp());
+        dialog.show();
+        fitDialog(dialog, true);
+    }
+
+    TextView sectionHeader(String text) {
+        TextView t = tv(text, 18, TEXT, Typeface.BOLD, Gravity.CENTER);
+        LinearLayout.LayoutParams lp = matchWrap();
+        lp.setMargins(0, Ui.dp(this, 8), 0, Ui.dp(this, 4));
+        t.setLayoutParams(lp);
+        return t;
+    }
+
+    private View infoRow(String label, String value, int valueColor) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.VERTICAL);
+        row.setBackground(Ui.stroke(CARD_2, 1, STROKE_SOFT, 16, this));
+        Ui.pad(row, 14, 12, 14, 12);
+        TextView l = tv(label, 14, MUTED, Typeface.NORMAL, Gravity.CENTER);
+        TextView v = tv(value, 16, valueColor, Typeface.BOLD, Gravity.CENTER);
+        v.setLineSpacing(Ui.dp(this, 2), 1.0f);
+        row.addView(l, matchWrap());
+        row.addView(v, matchWrap());
+        return row;
+    }
+
+    private View colorInfoRow(String label, int color) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.VERTICAL);
+        row.setBackground(Ui.stroke(CARD_2, 1, STROKE_SOFT, 16, this));
+        Ui.pad(row, 14, 12, 14, 12);
+
+        TextView l = tv(label, 14, MUTED, Typeface.NORMAL, Gravity.CENTER);
+        row.addView(l, matchWrap());
+
+        View swatch = new View(this);
+        GradientDrawable drawable = Ui.stroke(color, 1, 0x55FFFFFF, 8, this);
+        swatch.setBackground(drawable);
+        LinearLayout.LayoutParams swatchLp = new LinearLayout.LayoutParams(Ui.dp(this, 96), Ui.dp(this, 18));
+        swatchLp.gravity = Gravity.CENTER_HORIZONTAL;
+        swatchLp.topMargin = Ui.dp(this, 6);
+        row.addView(swatch, swatchLp);
+        return row;
+    }
+
+    private String onOff(boolean value) {
+        return value ? tr("Включено", "Enabled") : tr("Выключено", "Disabled");
+    }
+
+    private String minuteWord(long value) {
+        if (!prefs.englishUi()) {
+            long mod10 = value % 10L;
+            long mod100 = value % 100L;
+            if (mod10 == 1L && mod100 != 11L) return "минута";
+            if (mod10 >= 2L && mod10 <= 4L && (mod100 < 12L || mod100 > 14L)) return "минуты";
+            return "минут";
+        }
+        return value == 1L ? "minute" : "minutes";
+    }
+
+    private String hourWord(long value) {
+        if (!prefs.englishUi()) {
+            long mod10 = value % 10L;
+            long mod100 = value % 100L;
+            if (mod10 == 1L && mod100 != 11L) return "час";
+            if (mod10 >= 2L && mod10 <= 4L && (mod100 < 12L || mod100 > 14L)) return "часа";
+            return "часов";
+        }
+        return value == 1L ? "hour" : "hours";
+    }
+
+    private String pauseBehaviorName(int value) {
+        if (value == Prefs.PAUSE_BEHAVIOR_HIDE) return tr("Скрывать окно", "Hide the window");
+        if (value == Prefs.PAUSE_BEHAVIOR_SHORT) return tr("Ненадолго оставить и скрыть", "Keep briefly, then hide");
+        return tr("Оставлять окно", "Keep the window");
+    }
+
+    private String positionName(int value) {
+        switch (value) {
+            case 0: return tr("Верх слева", "Top left");
+            case 1: return tr("Верх по центру", "Top center");
+            case 2: return tr("Верх справа", "Top right");
+            case 3: return tr("Между верхом и центром слева", "Upper middle left");
+            case 4: return tr("Между верхом и центром по центру", "Upper middle center");
+            case 5: return tr("Между верхом и центром справа", "Upper middle right");
+            case 6: return tr("По центру слева", "Middle left");
+            case 7: return tr("Центр", "Center");
+            case 8: return tr("По центру справа", "Middle right");
+            case 9: return tr("Между центром и низом слева", "Lower middle left");
+            case 10: return tr("Между центром и низом по центру", "Lower middle center");
+            case 11: return tr("Между центром и низом справа", "Lower middle right");
+            case 12: return tr("Низ слева", "Bottom left");
+            case 13: return tr("Низ по центру", "Bottom center");
+            case 14: return tr("Низ справа", "Bottom right");
+            default: return String.valueOf(value);
+        }
+    }
+
+    private String currentSystemWindowLabel(AppStateDetector.Result appState, Prefs prefs) {
+        if (appState != null && appState.reverseCameraActive) return tr("Задний ход", "Reverse camera");
+        if (appState != null && appState.volumeUiActive) return tr("Окно громкости", "Volume window");
+        if (appState != null && appState.transientOverlay) return tr("Временное внешнее окно", "Transient external window");
+        String persisted = prefs.lastSystemWindowType();
+        if ("reverse".equals(persisted)) return tr("Задний ход", "Reverse camera");
+        if ("volume".equals(persisted)) return tr("Окно громкости", "Volume window");
+        if ("conflict".equals(persisted)) return tr("Приоритетное приложение", "Priority app");
+        if ("transient".equals(persisted)) return tr("Временное внешнее окно", "Transient external window");
+        return tr("Нет", "None");
+    }
+
+    private int currentSystemWindowColor(AppStateDetector.Result appState, Prefs prefs) {
+        if (appState != null && (appState.reverseCameraActive || appState.volumeUiActive || appState.transientOverlay)) return WARN;
+        long at = prefs.lastSystemWindowAt();
+        if (at <= 0L) return GREEN;
+        long ageMs = System.currentTimeMillis() - at;
+        return ageColor(ageMs, 15_000L, 120_000L);
     }
 
     private void checkAndRecover() {
@@ -1320,12 +904,12 @@ public class MainActivity extends Activity {
         Toast.makeText(this, tr("Движок перепроверен. Критичных проблем не найдено.", "Engine rechecked. No critical problems found."), Toast.LENGTH_SHORT).show();
     }
 
-    private void appendStatusLine(SpannableStringBuilder sb, String label, String value, boolean ok) {
+    private void appendStatusLine(SpannableStringBuilder sb, String label, String value, int valueColor) {
         int start = sb.length();
         sb.append(label).append(value).append("\n");
         int valueStart = start + label.length();
         int valueEnd = valueStart + value.length();
-        sb.setSpan(new ForegroundColorSpan(ok ? GREEN : 0xFFFF4D4D), valueStart, valueEnd, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        sb.setSpan(new ForegroundColorSpan(valueColor), valueStart, valueEnd, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
     }
     private void requestPostNotificationsRuntimeOnly() {
         try {
@@ -1391,7 +975,7 @@ public class MainActivity extends Activity {
         return c;
     }
 
-    private View menuButton(String title, String desc, View.OnClickListener listener) {
+    View menuButton(String title, String desc, View.OnClickListener listener) {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
@@ -1421,7 +1005,7 @@ public class MainActivity extends Activity {
         return row;
     }
 
-    private Button primaryButton(String text, View.OnClickListener l) {
+    Button primaryButton(String text, View.OnClickListener l) {
         Button b = new Button(this);
         b.setText(text);
         b.setAllCaps(false);
@@ -1433,7 +1017,7 @@ public class MainActivity extends Activity {
         return b;
     }
 
-    private Button previewButton(String text, View.OnClickListener l) {
+    Button previewButton(String text, View.OnClickListener l) {
         Button b = new Button(this);
         b.setText(text);
         b.setAllCaps(false);
@@ -1445,7 +1029,7 @@ public class MainActivity extends Activity {
         return b;
     }
 
-    private Button secondaryButton(String text, View.OnClickListener l) {
+    Button secondaryButton(String text, View.OnClickListener l) {
         Button b = new Button(this);
         b.setText(text);
         b.setAllCaps(false);
@@ -1464,39 +1048,39 @@ public class MainActivity extends Activity {
         return b;
     }
 
-    private TextView tv(String s, int sp, int color, int style, int gravity) {
+    TextView tv(String s, int sp, int color, int style, int gravity) {
         TextView t = Ui.tv(this, s, sp, color, style);
         t.setGravity(gravity);
         return t;
     }
 
-    private GradientDrawable gradient(int top, int bottom, int radius) {
+    GradientDrawable gradient(int top, int bottom, int radius) {
         GradientDrawable g = new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, new int[]{top, bottom});
         g.setCornerRadius(Ui.dp(this, radius));
         return g;
     }
 
-    private GradientDrawable gradientButton(int left, int right, int radius) {
+    GradientDrawable gradientButton(int left, int right, int radius) {
         GradientDrawable g = new GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, new int[]{left, right});
         g.setCornerRadius(Ui.dp(this, radius));
         return g;
     }
 
-    private GradientDrawable cardBg(int radius) {
+    GradientDrawable cardBg(int radius) {
         GradientDrawable g = new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, new int[]{CARD_TOP, CARD});
         g.setCornerRadius(Ui.dp(this, radius));
         g.setStroke(Ui.dp(this, 1), STROKE_SOFT);
         return g;
     }
 
-    private GradientDrawable menuBg() {
+    GradientDrawable menuBg() {
         GradientDrawable g = new GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, new int[]{0xFF1A263B, 0xFF131E30});
         g.setCornerRadius(Ui.dp(this, 18));
         g.setStroke(Ui.dp(this, 1), STROKE_SOFT);
         return g;
     }
 
-    private int lighten(int color, int amount) {
+    int lighten(int color, int amount) {
         int a = Color.alpha(color);
         int r = Math.min(255, Color.red(color) + amount);
         int g = Math.min(255, Color.green(color) + amount);
@@ -1504,14 +1088,14 @@ public class MainActivity extends Activity {
         return Color.argb(a, r, g, b);
     }
 
-    private Dialog fullDialog() {
+    Dialog fullDialog() {
         Dialog d = new Dialog(this);
         Window w = d.getWindow();
         if (w != null) w.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
         return d;
     }
 
-    private LinearLayout dialogRoot() {
+    LinearLayout dialogRoot() {
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
         box.setBackground(gradient(BG, BG_2, 0));
@@ -1519,7 +1103,7 @@ public class MainActivity extends Activity {
         return box;
     }
 
-    private void fitDialog(Dialog d, boolean fullHeight) {
+    void fitDialog(Dialog d, boolean fullHeight) {
         Window w = d.getWindow();
         if (w != null) {
             w.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
@@ -1527,14 +1111,16 @@ public class MainActivity extends Activity {
         }
     }
 
-    private LinearLayout.LayoutParams matchWrap() { return new LinearLayout.LayoutParams(-1, -2); }
-    private LinearLayout.LayoutParams btnLp() { LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, Ui.dp(this, 52)); lp.setMargins(0, Ui.dp(this, 12), 0, 0); return lp; }
-    private LinearLayout.LayoutParams smallGapLp() { LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2); lp.setMargins(0, Ui.dp(this, 9), 0, 0); return lp; }
-    private LinearLayout.LayoutParams weightLp(float weight) { LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, Ui.dp(this, 58), weight); lp.setMargins(Ui.dp(this, 4), Ui.dp(this, 8), Ui.dp(this, 4), 0); return lp; }
-    private LinearLayout.LayoutParams quickButtonLp(float weight) { LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, Ui.dp(this, 64), weight); lp.setMargins(Ui.dp(this, 4), Ui.dp(this, 8), Ui.dp(this, 4), Ui.dp(this, 10)); return lp; }
-    private void space(LinearLayout parent, int dp) { Space s = new Space(this); parent.addView(s, new LinearLayout.LayoutParams(1, Ui.dp(this, dp))); }
+    LinearLayout.LayoutParams matchWrap() { return new LinearLayout.LayoutParams(-1, -2); }
+    LinearLayout.LayoutParams btnLp() { LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, Ui.dp(this, 52)); lp.setMargins(0, Ui.dp(this, 12), 0, 0); return lp; }
+    LinearLayout.LayoutParams smallGapLp() { LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2); lp.setMargins(0, Ui.dp(this, 9), 0, 0); return lp; }
+    LinearLayout.LayoutParams weightLp(float weight) { LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, Ui.dp(this, 58), weight); lp.setMargins(Ui.dp(this, 4), Ui.dp(this, 8), Ui.dp(this, 4), 0); return lp; }
+    LinearLayout.LayoutParams quickButtonLp(float weight) { LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, Ui.dp(this, 64), weight); lp.setMargins(Ui.dp(this, 4), Ui.dp(this, 8), Ui.dp(this, 4), Ui.dp(this, 10)); return lp; }
+    void space(LinearLayout parent, int dp) { Space s = new Space(this); parent.addView(s, new LinearLayout.LayoutParams(1, Ui.dp(this, dp))); }
 
-    private String tr(String ru, String en) {
+    String tr(String ru, String en) {
         return prefs != null && prefs.englishUi() ? en : ru;
     }
+
+    Prefs prefs() { return prefs; }
 }

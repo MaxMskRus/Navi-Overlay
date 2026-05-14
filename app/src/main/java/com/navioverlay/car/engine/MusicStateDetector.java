@@ -7,12 +7,15 @@ import android.graphics.Bitmap;
 import android.graphics.drawable.BitmapDrawable;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.Icon;
+import android.media.MediaDescription;
 import android.media.AudioManager;
 import android.media.MediaMetadata;
 import android.media.session.MediaController;
 import android.media.session.MediaSessionManager;
 import android.media.session.PlaybackState;
+import android.net.Uri;
 import android.os.Bundle;
+import android.os.SystemClock;
 import android.service.notification.StatusBarNotification;
 import com.navioverlay.car.core.Logx;
 import com.navioverlay.car.core.Prefs;
@@ -38,9 +41,13 @@ public final class MusicStateDetector {
 
     public TrackSnapshot read() {
         boolean audioActive = isAudioPlaybackActive();
-        StatusBarNotification[] notifications = MusicNotificationListenerService.latestNotifications();
+        boolean notificationsFresh = MusicNotificationListenerService.hasFreshNotifications();
+        boolean notificationsUsable = notificationsFresh || MusicNotificationListenerService.hasUsableNotifications();
+        StatusBarNotification[] notifications = notificationsUsable ? MusicNotificationListenerService.latestNotifications() : new StatusBarNotification[0];
         TrackSnapshot fromSession = readFromMediaSessions(notifications);
-        TrackSnapshot fromNotifications = readFromActiveNotifications(notifications, audioActive);
+        TrackSnapshot fromNotifications = notificationsUsable ? readFromActiveNotifications(notifications, audioActive, notificationsFresh) : TrackSnapshot.empty();
+        fromSession = mergeArtwork(fromSession, fromNotifications);
+        fromNotifications = mergeArtwork(fromNotifications, fromSession);
         if (fromSession.hasText() && fromSession.hasAlbumArt()) rememberArtwork(fromSession);
         if (fromNotifications.hasText() && fromNotifications.hasAlbumArt()) rememberArtwork(fromNotifications);
         if (fromSession.hasText() && !fromSession.hasAlbumArt() && canReuseArtwork(fromSession)) {
@@ -49,13 +56,13 @@ public final class MusicStateDetector {
         if (fromNotifications.hasText() && !fromNotifications.hasAlbumArt() && canReuseArtwork(fromNotifications)) {
             fromNotifications = withLastGoodArtwork(fromNotifications);
         }
-        if (fromSession.hasText() && fromSession.playing) return remember(fromSession);
-        if (fromNotifications.hasText() && fromNotifications.playing) return remember(fromNotifications);
-        if (fromNotifications.hasText()) return fromNotifications;
-        if (fromSession.hasText()) return fromSession;
+        if (fromSession.hasText() && fromSession.playing) return rememberAndPersist(fromSession);
+        if (fromNotifications.hasText() && fromNotifications.playing) return rememberAndPersist(fromNotifications);
+        if (fromNotifications.hasText()) return persistSeenTrack(fromNotifications);
+        if (fromSession.hasText()) return persistSeenTrack(fromSession);
 
         if (audioActive && lastGood.hasText() && System.currentTimeMillis() - lastGoodAt < LAST_GOOD_TTL_MS) {
-            return new TrackSnapshot(lastGood.sourcePackage, lastGood.title, lastGood.artist, true, TrackSnapshot.SOURCE_LAST_GOOD, lastGood.albumArt, lastGood.durationMs, lastGood.positionMs);
+            return persistSeenTrack(new TrackSnapshot(lastGood.sourcePackage, lastGood.title, lastGood.artist, true, TrackSnapshot.SOURCE_LAST_GOOD, lastGood.albumArt, lastGood.durationMs, lastGood.positionMs));
         }
         return TrackSnapshot.empty();
     }
@@ -64,6 +71,17 @@ public final class MusicStateDetector {
         if (s != null && s.hasText() && s.playing) {
             lastGood = s;
             lastGoodAt = System.currentTimeMillis();
+        }
+        return s == null ? TrackSnapshot.empty() : s;
+    }
+
+    private TrackSnapshot rememberAndPersist(TrackSnapshot s) {
+        return persistSeenTrack(remember(s));
+    }
+
+    private TrackSnapshot persistSeenTrack(TrackSnapshot s) {
+        if (s != null && s.hasText()) {
+            prefs.setLastSeenTrack(s.sourcePackage, s.artist, s.title);
         }
         return s == null ? TrackSnapshot.empty() : s;
     }
@@ -81,11 +99,22 @@ public final class MusicStateDetector {
         String sTitle = TrackSnapshot.clean(s.title);
         String lgTitle = TrackSnapshot.clean(lastGood.title);
         if (!sTitle.isEmpty() && !lgTitle.isEmpty() && !sTitle.equals(lgTitle)) return false;
-        return System.currentTimeMillis() - lastGoodAt < 15000L;
+        if (!s.playing && !TrackSnapshot.SOURCE_MEDIA_SESSION.equals(s.sourceType) && !TrackSnapshot.SOURCE_NOTIFICATION.equals(s.sourceType)) return false;
+        return System.currentTimeMillis() - lastGoodAt < 12000L;
     }
 
     private TrackSnapshot withLastGoodArtwork(TrackSnapshot s) {
         return new TrackSnapshot(s.sourcePackage, s.title, s.artist, s.playing, s.sourceType, lastGood.albumArt, s.durationMs, s.positionMs);
+    }
+
+    private TrackSnapshot mergeArtwork(TrackSnapshot primary, TrackSnapshot secondary) {
+        if (primary == null || !primary.hasText() || primary.hasAlbumArt()) return primary == null ? TrackSnapshot.empty() : primary;
+        if (secondary == null || !secondary.hasText() || !secondary.hasAlbumArt()) return primary;
+        if (!TrackSnapshot.clean(primary.sourcePackage).equals(TrackSnapshot.clean(secondary.sourcePackage))) return primary;
+        String pTitle = TrackSnapshot.clean(primary.title);
+        String sTitle = TrackSnapshot.clean(secondary.title);
+        if (!pTitle.isEmpty() && !sTitle.isEmpty() && !pTitle.equals(sTitle)) return primary;
+        return new TrackSnapshot(primary.sourcePackage, primary.title, primary.artist, primary.playing, primary.sourceType, secondary.albumArt, primary.durationMs, primary.positionMs);
     }
 
     private TrackSnapshot readFromMediaSessions(StatusBarNotification[] notifications) {
@@ -110,7 +139,8 @@ public final class MusicStateDetector {
                 Bitmap albumArt = normalizeBitmap(firstBitmap(
                         m.getBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART),
                         m.getBitmap(MediaMetadata.METADATA_KEY_ART),
-                        m.getBitmap(MediaMetadata.METADATA_KEY_DISPLAY_ICON)));
+                        m.getBitmap(MediaMetadata.METADATA_KEY_DISPLAY_ICON),
+                        metadataDescriptionBitmap(m)));
                 long durationMs = m.getLong(MediaMetadata.METADATA_KEY_DURATION);
                 long positionMs = currentPosition(c);
                 TrackSnapshot s = new TrackSnapshot(pkg, title, artist, playing, TrackSnapshot.SOURCE_MEDIA_SESSION, albumArt, durationMs, positionMs);
@@ -127,9 +157,10 @@ public final class MusicStateDetector {
         }
     }
 
-    private TrackSnapshot readFromActiveNotifications(StatusBarNotification[] arr, boolean audioActive) {
+    private TrackSnapshot readFromActiveNotifications(StatusBarNotification[] arr, boolean audioActive, boolean notificationsFresh) {
         try {
             if (arr == null) return TrackSnapshot.empty();
+            if (!notificationsFresh && !audioActive) return TrackSnapshot.empty();
             for (StatusBarNotification sbn : arr) {
                 if (sbn == null || sbn.getNotification() == null) continue;
                 String pkg = sbn.getPackageName();
@@ -162,7 +193,7 @@ public final class MusicStateDetector {
     private boolean canReusePlaybackState(String pkg) {
         if (pkg == null || pkg.isEmpty()) return false;
         if (!pkg.equals(TrackSnapshot.clean(lastGood.sourcePackage))) return false;
-        return lastGood.hasSeekRange() && System.currentTimeMillis() - lastGoodAt < 15000L;
+        return lastGood.hasSeekRange() && System.currentTimeMillis() - lastGoodAt < 8000L;
     }
 
     private boolean hasActiveNotificationForPackage(StatusBarNotification[] arr, String pkg) {
@@ -189,7 +220,23 @@ public final class MusicStateDetector {
         try {
             PlaybackState s = c.getPlaybackState();
             if (s == null) return -1L;
-            return Math.max(-1L, s.getPosition());
+            long position = Math.max(-1L, s.getPosition());
+            if (position < 0L) return -1L;
+            int state = s.getState();
+            if (state == PlaybackState.STATE_PLAYING
+                    || state == PlaybackState.STATE_BUFFERING
+                    || state == PlaybackState.STATE_FAST_FORWARDING
+                    || state == PlaybackState.STATE_REWINDING) {
+                long updatedAt = s.getLastPositionUpdateTime();
+                float speed = s.getPlaybackSpeed();
+                if (updatedAt > 0L && speed > 0f) {
+                    long delta = SystemClock.elapsedRealtime() - updatedAt;
+                    if (delta > 0L) {
+                        position += Math.round(delta * speed);
+                    }
+                }
+            }
+            return position;
         } catch (Throwable ignored) {
             return -1L;
         }
@@ -274,7 +321,10 @@ public final class MusicStateDetector {
     private Bitmap extractNotificationArt(Notification notification, Bundle extras) {
         Bitmap fromExtras = firstBitmap(
                 bitmapOf(extras.get(Notification.EXTRA_LARGE_ICON_BIG)),
-                bitmapOf(extras.get(Notification.EXTRA_LARGE_ICON)));
+                bitmapOf(extras.get(Notification.EXTRA_LARGE_ICON)),
+                bitmapOf(extras.get(Notification.EXTRA_PICTURE)),
+                bitmapOf(extras.get("android.picture")),
+                bitmapOf(extras.get("android.pictureIcon")));
         if (fromExtras != null) return fromExtras;
 
         try {
@@ -296,7 +346,7 @@ public final class MusicStateDetector {
     private Bitmap normalizeBitmap(Bitmap bitmap) {
         if (bitmap == null) return null;
         try {
-            int maxSide = Math.max(96, Math.round(app.getResources().getDisplayMetrics().density * 72f));
+            int maxSide = Math.max(512, Math.round(app.getResources().getDisplayMetrics().density * 220f));
             int width = bitmap.getWidth();
             int height = bitmap.getHeight();
             if (width <= 0 || height <= 0) return null;
@@ -323,6 +373,35 @@ public final class MusicStateDetector {
         if (icon == null) return null;
         try {
             Drawable drawable = icon.loadDrawable(app);
+            if (drawable instanceof BitmapDrawable) return ((BitmapDrawable) drawable).getBitmap();
+        } catch (Throwable ignored) {}
+        return null;
+    }
+
+    private Bitmap metadataDescriptionBitmap(MediaMetadata metadata) {
+        if (metadata == null) return null;
+        try {
+            MediaDescription description = metadata.getDescription();
+            if (description == null) return null;
+            Bitmap iconBitmap = description.getIconBitmap();
+            if (iconBitmap != null) return iconBitmap;
+            return bitmapFromUri(description.getIconUri());
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    private Bitmap bitmapFromUri(Uri uri) {
+        if (uri == null) return null;
+        String scheme = uri.getScheme();
+        if (scheme == null) return null;
+        if (!"content".equalsIgnoreCase(scheme)
+                && !"android.resource".equalsIgnoreCase(scheme)
+                && !"file".equalsIgnoreCase(scheme)) {
+            return null;
+        }
+        try {
+            Drawable drawable = Drawable.createFromStream(app.getContentResolver().openInputStream(uri), uri.toString());
             if (drawable instanceof BitmapDrawable) return ((BitmapDrawable) drawable).getBitmap();
         } catch (Throwable ignored) {}
         return null;

@@ -5,8 +5,10 @@ import android.os.Handler;
 import android.os.Looper;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
+import android.view.accessibility.AccessibilityWindowInfo;
 import com.navioverlay.car.core.Logx;
 import com.navioverlay.car.core.Prefs;
+import java.util.List;
 
 /**
  * Определяет именно видимое приложение.
@@ -33,7 +35,7 @@ public class NavigatorAccessibilityService extends AccessibilityService {
             try {
                 Prefs prefs = new Prefs(NavigatorAccessibilityService.this);
                 if (prefs.enabled()) {
-                    readRootPackage(prefs);
+                    readWindowState(prefs);
                     next = POLL_ENABLED_MS;
                 } else {
                     next = POLL_DISABLED_MS;
@@ -61,21 +63,67 @@ public class NavigatorAccessibilityService extends AccessibilityService {
                 || type == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED) {
             lastEventAt = System.currentTimeMillis();
             Prefs prefs = new Prefs(this);
+            CharSequence textHint = null;
+            if (event.getText() != null && !event.getText().isEmpty()) {
+                textHint = event.getText().get(0);
+            } else if (event.getContentDescription() != null) {
+                textHint = event.getContentDescription();
+            }
+            ForegroundState.setWindowSignal(
+                    event.getClassName() == null ? "" : event.getClassName().toString(),
+                    textHint
+            );
             setPackage(event.getPackageName().toString(), prefs);
         }
     }
 
-    private void readRootPackage(Prefs prefs) {
+    private void readWindowState(Prefs prefs) {
         AccessibilityNodeInfo root = null;
         try {
             root = getRootInActiveWindow();
             if (root != null && root.getPackageName() != null) {
                 lastRootReadAt = System.currentTimeMillis();
+                ForegroundState.setWindowSignal(
+                        root.getClassName() == null ? "" : root.getClassName().toString(),
+                        root.getText() != null ? root.getText() : root.getContentDescription()
+                );
                 setPackage(root.getPackageName().toString(), prefs);
             }
+            probeAllWindowsForReverse();
         } catch (Throwable ignored) {
         } finally {
             try { if (root != null) root.recycle(); } catch (Throwable ignored) {}
+        }
+    }
+
+    private void probeAllWindowsForReverse() {
+        List<AccessibilityWindowInfo> windows;
+        try {
+            windows = getWindows();
+        } catch (Throwable ignored) {
+            return;
+        }
+        if (windows == null || windows.isEmpty()) return;
+        for (AccessibilityWindowInfo window : windows) {
+            if (window == null) continue;
+            AccessibilityNodeInfo node = null;
+            try {
+                node = window.getRoot();
+                if (node == null) continue;
+                CharSequence pkg = node.getPackageName();
+                CharSequence cls = node.getClassName();
+                CharSequence hint = node.getText() != null ? node.getText() : node.getContentDescription();
+                if (pkg != null && ForegroundState.isReverseCameraPackage(pkg.toString())) {
+                    ForegroundState.markReverseCameraSignal();
+                }
+                ForegroundState.setWindowSignal(
+                        cls == null ? "" : cls.toString(),
+                        hint
+                );
+            } catch (Throwable ignored) {
+            } finally {
+                try { if (node != null) node.recycle(); } catch (Throwable ignored) {}
+            }
         }
     }
 

@@ -12,8 +12,8 @@ android {
         applicationId 'com.navioverlay.car'
         minSdk 23
         targetSdk 34
-        versionCode 32
-        versionName 'v1.5'
+        versionCode 33
+        versionName 'v1.6'
     }
 
     compileOptions {

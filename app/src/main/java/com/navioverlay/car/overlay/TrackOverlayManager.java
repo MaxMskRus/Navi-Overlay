@@ -9,7 +9,6 @@ import android.graphics.PixelFormat;
 import android.graphics.Point;
 import android.graphics.Rect;
 import android.graphics.Typeface;
-import android.graphics.drawable.Drawable;
 import android.media.AudioManager;
 import android.os.Build;
 import android.os.Handler;
@@ -26,6 +25,7 @@ import android.view.Gravity;
 import android.view.HapticFeedbackConstants;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
+import android.view.ViewGroup;
 import android.view.ViewConfiguration;
 import android.view.WindowManager;
 import android.view.WindowMetrics;
@@ -35,7 +35,6 @@ import android.widget.SeekBar;
 import android.widget.TextView;
 import android.view.animation.LinearInterpolator;
 import com.navioverlay.car.core.OverlayFonts;
-import com.navioverlay.car.core.OverlayShapeDrawable;
 import com.navioverlay.car.core.Prefs;
 import com.navioverlay.car.core.Ui;
 import com.navioverlay.car.engine.MusicStateDetector;
@@ -48,6 +47,8 @@ public final class TrackOverlayManager {
     private static LinearLayout overlayView;
     private static LinearLayout panelView;
     private static LinearLayout contentRow;
+    private static LinearLayout specialFixedRow;
+    private static LinearLayout specialRightColumn;
     private static ImageView albumArtView;
     private static TextView lineView;
     private static LinearLayout seekContainer;
@@ -70,6 +71,7 @@ public final class TrackOverlayManager {
     private static final Runnable recoveryTask = TrackOverlayManager::attemptDeferredRecoveryOnMain;
     private static final Runnable seekProgressTask = TrackOverlayManager::updateSeekProgressOnMain;
     private static final Runnable albumArtSingleTapTask = TrackOverlayManager::performAlbumArtSingleTapOnMain;
+    private static final Runnable albumArtRefreshTask = TrackOverlayManager::refreshAlbumArtOnMain;
     private static ObjectAnimator marqueeAnimator;
     private static int lastAppliedPosition = -1;
     private static boolean lastAppliedCustomPosition = false;
@@ -100,22 +102,36 @@ public final class TrackOverlayManager {
     private static long volumeDimUntilAt = 0L;
     private static long sessionVisibleUntilAt = 0L;
     private static boolean sessionContinuous = false;
+    private static boolean pauseHideFrozen = false;
     private static boolean sessionRecoveryRestartRequested = false;
     private static long transientRecoveryNotBeforeAt = 0L;
     private static long lastControlledRecoveryAt = 0L;
     private static Context lastAppContext;
     private static final long CONTROLLED_RECOVERY_BACKOFF_MS = 1800L;
     private static TrackSnapshot lastTrackSnapshot = TrackSnapshot.empty();
+    private static final SeekSessionState seekSession = new SeekSessionState();
     private static boolean seekTrackingActive = false;
     private static boolean seekTouchActive = false;
     private static long lastSeekProgressRefreshAt = 0L;
+    private static volatile String lastSeekDebugReason = "init";
+    private static Bitmap placeholderAlbumArtBitmap;
+    private static int albumArtRetryCount = 0;
+    private static boolean albumArtWaitingForReal = false;
 
     public static boolean canDraw(Context c){return Settings.canDrawOverlays(c);}
+    public static String lastSeekDebugReason() { return lastSeekDebugReason == null ? "" : lastSeekDebugReason; }
+    public static boolean seekSessionHasRange() { return seekSession.hasRange(); }
+    public static long seekSessionDurationMs() { return seekSession.durationMs(); }
+    public static long seekSessionEstimatedPositionMs() { return seekSession.estimatePositionNow(); }
+    public static boolean albumArtWaitingForReal() { return albumArtWaitingForReal; }
+    public static int albumArtRetryCount() { return albumArtRetryCount; }
     public static void show(Context c,String title,String artist){ showInternal(c,title,artist,false); }
     public static void showTrack(Context c, TrackSnapshot track){
         if(track==null){ hide(); return; }
-        lastTrackSnapshot = MusicStateDetector.enrichWithLivePlaybackState(c, track);
-        showInternal(c, track.title, track.artist, track.albumArt, false);
+        TrackSnapshot enriched = MusicStateDetector.enrichWithLivePlaybackState(c, track);
+        lastTrackSnapshot = enriched;
+        syncSeekSessionState(enriched);
+        showInternal(c, enriched.title, enriched.artist, enriched.albumArt, false);
     }
     public static void test(Context c){
         Context app = c.getApplicationContext();
@@ -163,7 +179,7 @@ public final class TrackOverlayManager {
         boolean wasVisible = panelView != null && panelView.getVisibility() == LinearLayout.VISIBLE;
         String nextText = format(title,artist);
         boolean sameTextAsRendered = nextText.equals(lastRenderedText);
-        boolean sameAlbumArt = sameBitmap(lastAlbumArt, albumArt);
+        boolean sameAlbumArt = OverlayRenderHelper.sameBitmap(lastAlbumArt, albumArt);
 
         boolean newlyCreated=false;
         if(overlayView==null || panelView==null || lineView==null || contentRow==null){
@@ -217,6 +233,10 @@ public final class TrackOverlayManager {
         }
         updateSeekBarVisibility(c, p);
         applySmartTextLayout(c,p,text);
+        if (p.featureSeekBar() && p.displayWhilePlaying()) {
+            scheduleSeekProgressUpdates(c, true);
+        }
+        scheduleAlbumArtRefreshIfNeeded(c, p, albumArt);
 
         try{
             if(newlyCreated || !hostAttached){
@@ -249,7 +269,10 @@ public final class TrackOverlayManager {
                 sessionVisibleUntilAt = now + Math.max(0, p.displayMs());
             }
         }
-        if (forceRestartTimer) {
+        boolean pauseHoldModeActive = isPauseHoldModeActive(p);
+        if (pauseHoldModeActive) {
+            pauseAutoHideForPauseOnMain();
+        } else if (forceRestartTimer) {
             restartHideTimerForMs(Math.max(0, overrideHideMs));
         } else if (!wasVisible || !sameTextAsRendered || !sameAlbumArt) {
             restartHideTimer(p);
@@ -266,15 +289,63 @@ public final class TrackOverlayManager {
 
     private static boolean shouldSessionBeVisibleAt(long now) {
         if (isTestModeActiveAt(now)) return true;
-        return sessionContinuous || sessionVisibleUntilAt > now;
+        return pauseHideFrozen || sessionContinuous || sessionVisibleUntilAt > now;
     }
 
     private static int remainingSessionMs(long now, Prefs prefs) {
         if (isTestModeActiveAt(now)) {
             return (int) Math.max(500L, testModeUntilAt - now);
         }
+        if (pauseHideFrozen) return Math.max(1000, prefs.displayMs());
         if (sessionContinuous || prefs.displayWhilePlaying()) return -1;
         return (int) Math.max(0L, sessionVisibleUntilAt - now);
+    }
+
+    private static boolean isPauseHoldModeActive(Prefs prefs) {
+        if (prefs == null || prefs.displayWhilePlaying() || prefs.pauseBehavior() != Prefs.PAUSE_BEHAVIOR_KEEP) return false;
+        TrackSnapshot track = lastTrackSnapshot;
+        if (track == null || !track.hasText() || track.playing) return false;
+        return TrackSnapshot.SOURCE_MEDIA_SESSION.equals(track.sourceType)
+                || TrackSnapshot.SOURCE_NOTIFICATION.equals(track.sourceType)
+                || TrackSnapshot.SOURCE_LAST_GOOD.equals(track.sourceType);
+    }
+
+    public static void pauseAutoHideForPause() {
+        h.post(TrackOverlayManager::pauseAutoHideForPauseOnMain);
+    }
+
+    public static void resumeAutoHideAfterPause(Context raw) {
+        Context app = raw == null ? null : raw.getApplicationContext();
+        h.post(() -> resumeAutoHideAfterPauseOnMain(app));
+    }
+
+    private static void pauseAutoHideForPauseOnMain() {
+        pauseHideFrozen = true;
+        h.removeCallbacks(hideTask);
+        h.removeCallbacks(testHideTask);
+    }
+
+    private static void resumeAutoHideAfterPauseOnMain(Context app) {
+        if (!pauseHideFrozen) return;
+        pauseHideFrozen = false;
+        if (app == null) app = lastAppContext;
+        if (app == null) return;
+        Prefs prefs = new Prefs(app);
+        if (isTestModeActive()) {
+            testModeUntilAt = SystemClock.uptimeMillis() + TEST_DISPLAY_MS;
+            restartTestHideTimerForMs(TEST_DISPLAY_MS);
+            return;
+        }
+        if (prefs.displayWhilePlaying()) {
+            sessionContinuous = true;
+            sessionVisibleUntilAt = Long.MAX_VALUE;
+            h.removeCallbacks(hideTask);
+            return;
+        }
+        int ms = Math.max(1000, prefs.displayMs());
+        sessionContinuous = false;
+        sessionVisibleUntilAt = SystemClock.uptimeMillis() + ms;
+        restartHideTimerForMs(ms);
     }
 
     private static boolean isHostActuallyVisible() {
@@ -329,6 +400,18 @@ public final class TrackOverlayManager {
         contentRow.setClipChildren(false);
         panelView.addView(contentRow,new LinearLayout.LayoutParams(-1,-2));
 
+        specialFixedRow = new LinearLayout(c);
+        specialFixedRow.setOrientation(LinearLayout.HORIZONTAL);
+        specialFixedRow.setGravity(Gravity.CENTER_VERTICAL);
+        specialFixedRow.setClipToPadding(false);
+        specialFixedRow.setClipChildren(false);
+
+        specialRightColumn = new LinearLayout(c);
+        specialRightColumn.setOrientation(LinearLayout.VERTICAL);
+        specialRightColumn.setGravity(Gravity.CENTER_HORIZONTAL);
+        specialRightColumn.setClipToPadding(false);
+        specialRightColumn.setClipChildren(false);
+
         albumArtView = new ImageView(c);
         albumArtView.setScaleType(ImageView.ScaleType.CENTER_CROP);
         albumArtView.setVisibility(ImageView.GONE);
@@ -361,8 +444,8 @@ public final class TrackOverlayManager {
         });
         seekBarView.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
-                if (!fromUser || !seekTrackingActive || lastTrackSnapshot == null || !lastTrackSnapshot.hasSeekRange()) return;
-                long duration = Math.max(1L, lastTrackSnapshot.durationMs);
+                long duration = effectiveSeekDurationMs();
+                if (!fromUser || !seekTrackingActive || lastTrackSnapshot == null || duration <= 0L) return;
                 long target = Math.min(duration, Math.max(0L, Math.round((progress / 1000f) * duration)));
                 lastTrackSnapshot = new TrackSnapshot(
                         lastTrackSnapshot.sourcePackage,
@@ -371,9 +454,10 @@ public final class TrackOverlayManager {
                         lastTrackSnapshot.playing,
                         lastTrackSnapshot.sourceType,
                         lastTrackSnapshot.albumArt,
-                        lastTrackSnapshot.durationMs,
+                        duration,
                         target
                 );
+                seekSession.applyUserSeek(target);
             }
             @Override public void onStartTrackingTouch(SeekBar seekBar) {
                 seekTrackingActive = true;
@@ -405,29 +489,223 @@ public final class TrackOverlayManager {
         lastDesign = -1;
     }
 
+    private static boolean shouldUseExpandedFixedAlbumArt(Prefs p) {
+        return p.featureFixedWindow() && p.featureControls() && !p.featureSeekBar() && p.featureAlbumArt();
+    }
+
+    private static void detachFromParent(android.view.View view){
+        if(view == null)return;
+        android.view.ViewParent parent = view.getParent();
+        if(parent instanceof ViewGroup){
+            ((ViewGroup) parent).removeView(view);
+        }
+    }
+
+    private static void ensureNormalLayout(){
+        if(panelView==null || contentRow==null || lineView==null || controlsRow==null || albumArtView==null)return;
+        panelView.removeView(specialFixedRow);
+        if(panelView.indexOfChild(contentRow) < 0){
+            panelView.addView(contentRow, 0, new LinearLayout.LayoutParams(-1,-2));
+        }
+        detachFromParent(albumArtView);
+        detachFromParent(lineView);
+        detachFromParent(controlsRow);
+        contentRow.removeAllViews();
+        contentRow.addView(albumArtView, new LinearLayout.LayoutParams(0, 0));
+        contentRow.addView(lineView, new LinearLayout.LayoutParams(-2,-2));
+        if(panelView.indexOfChild(seekContainer) < 0){
+            panelView.addView(seekContainer, new LinearLayout.LayoutParams(-1,-2));
+        }
+        if(panelView.indexOfChild(controlsRow) < 0){
+            panelView.addView(controlsRow, new LinearLayout.LayoutParams(-1,-2));
+        }
+        specialRightColumn.removeAllViews();
+        contentRow.setVisibility(LinearLayout.VISIBLE);
+    }
+
+    private static void ensureSpecialFixedLayout(){
+        if(panelView==null || contentRow==null || lineView==null || controlsRow==null || albumArtView==null || specialFixedRow==null || specialRightColumn==null)return;
+        panelView.removeView(contentRow);
+        panelView.removeView(controlsRow);
+        detachFromParent(albumArtView);
+        detachFromParent(lineView);
+        detachFromParent(controlsRow);
+        specialFixedRow.removeAllViews();
+        specialRightColumn.removeAllViews();
+        specialFixedRow.addView(albumArtView, new LinearLayout.LayoutParams(0, 0));
+        specialRightColumn.addView(lineView, new LinearLayout.LayoutParams(-1,-2));
+        specialRightColumn.addView(controlsRow, new LinearLayout.LayoutParams(-1,-2));
+        specialFixedRow.addView(specialRightColumn, new LinearLayout.LayoutParams(0, -2, 1f));
+        if(panelView.indexOfChild(specialFixedRow) < 0){
+            panelView.addView(specialFixedRow, 0, new LinearLayout.LayoutParams(-1,-2));
+        }
+    }
+
     private static void applyAlbumArt(Context c, Prefs p, Bitmap albumArt){
         if(contentRow==null || albumArtView==null || lineView==null)return;
-        boolean showCover = p.featureAlbumArt() && albumArt != null && !albumArt.isRecycled();
+        boolean wantsCover = p.featureAlbumArt();
+        Bitmap effectiveArt = albumArt;
+        if (wantsCover && (effectiveArt == null || effectiveArt.isRecycled()) && lastTrackSnapshot != null && lastTrackSnapshot.hasText()) {
+            effectiveArt = AlbumArtHelper.getPlaceholderAlbumArt(c, Math.max(1, p.textSize()), placeholderAlbumArtBitmap);
+            if (effectiveArt != null) placeholderAlbumArtBitmap = effectiveArt;
+        }
+        boolean showCover = wantsCover && effectiveArt != null && !effectiveArt.isRecycled();
+        boolean specialLayout = showCover && shouldUseExpandedFixedAlbumArt(p);
+        if (specialLayout) ensureSpecialFixedLayout(); else ensureNormalLayout();
         contentRow.setGravity(showCover ? Gravity.CENTER_VERTICAL : Gravity.CENTER);
-        lineView.setGravity(showCover ? (Gravity.START | Gravity.CENTER_VERTICAL) : resolveTextGravity(p, false, false));
+        lineView.setGravity(showCover
+                ? (specialLayout ? (Gravity.CENTER_HORIZONTAL | Gravity.CENTER_VERTICAL) : (Gravity.START | Gravity.CENTER_VERTICAL))
+                : resolveTextGravity(p, false, false));
         if(showCover){
             int textSize = Math.max(1, p.textSize());
             int artDp = Math.max(44, Math.min(92, Math.round(textSize * 2.15f)));
-            int artPx = Ui.dp(c, artDp);
+            int baseArtPx = Ui.dp(c, artDp);
+            int artPx = specialLayout ? estimateExpandedFixedAlbumArtPx(c, p, textSize, baseArtPx) : baseArtPx;
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(artPx, artPx);
+            lp.gravity = Gravity.CENTER_VERTICAL;
             lp.setMargins(0, 0, Ui.dp(c, Math.max(10, Math.min(18, Math.round(textSize * 0.42f)))), 0);
             albumArtView.setLayoutParams(lp);
-            albumArtView.setImageBitmap(albumArt);
+            albumArtView.setImageBitmap(effectiveArt);
             int radius = Math.max(12, Math.min(22, Math.round(textSize * 0.55f)));
             albumArtView.setBackground(Ui.stroke(0x22141B2A, 1, 0x44FFFFFF, radius, c));
             albumArtView.setClipToOutline(true);
             albumArtView.setAlpha(1f);
             albumArtView.setVisibility(ImageView.VISIBLE);
         } else {
+            ensureNormalLayout();
             albumArtView.setImageDrawable(null);
             albumArtView.setAlpha(1f);
             albumArtView.setVisibility(ImageView.GONE);
             albumArtView.setLayoutParams(new LinearLayout.LayoutParams(0, 0));
+        }
+    }
+
+    private static int estimateExpandedFixedAlbumArtPx(Context c, Prefs p, int textSize, int fallbackPx) {
+        int widthPx = p.fixedWindowWidth();
+        if (widthPx <= 0) {
+            DisplayMetrics dm = getRealDisplayMetrics(c);
+            int screenWidth = Math.max(dm.widthPixels, Ui.dp(c, 320));
+            int screenHeight = Math.max(dm.heightPixels, Ui.dp(c, 320));
+            boolean landscape = screenWidth > screenHeight;
+            int edgeMargin = Ui.dp(c, landscape ? 12 : 16);
+            int maxWindowWidth = Math.max(Ui.dp(c, 220), screenWidth - edgeMargin * 2);
+            float widthFactor = landscape ? 0.74f : 0.86f;
+            widthPx = Math.max(Ui.dp(c, 150), Math.min(maxWindowWidth, Math.round(maxWindowWidth * widthFactor)));
+        }
+
+        float sizeScale = p.controlsSize() == Prefs.CONTROLS_SIZE_SMALL ? 0.88f
+                : (p.controlsSize() == Prefs.CONTROLS_SIZE_LARGE ? 1.16f : 1f);
+        int buttonBaseDp = Math.max(34, Math.min(76, Math.round(textSize * 1.66f * sizeScale)));
+        int buttonHeightPx = Ui.dp(c, buttonBaseDp);
+        int controlsVerticalGapPx = Ui.dp(c, Math.max(8, Math.min(18, Math.round(textSize * 0.45f))));
+        int controlsBlockPx = buttonHeightPx + controlsVerticalGapPx * 2;
+        int contentBlockPx = Ui.dp(c, Math.max(34, Math.min(108, Math.round(textSize * 2.35f))));
+        int widthDrivenPx = Math.round(widthPx * 0.18f);
+        int targetPx = Math.max(fallbackPx, Math.max(widthDrivenPx, contentBlockPx + controlsBlockPx - Ui.dp(c, 18)));
+        int maxPx = Math.min(Ui.dp(c, 170), Math.round(widthPx * 0.24f));
+        return Math.max(fallbackPx, Math.min(maxPx, targetPx));
+    }
+
+    private static void scheduleAlbumArtRefreshIfNeeded(Context c, Prefs p, Bitmap rawAlbumArt) {
+        h.removeCallbacks(albumArtRefreshTask);
+        if (!AlbumArtHelper.shouldScheduleRefresh(p, rawAlbumArt, lastTrackSnapshot)) {
+            resetAlbumArtRetryState();
+            return;
+        }
+        albumArtWaitingForReal = true;
+        long delayMs = AlbumArtHelper.nextRetryDelayMs(albumArtRetryCount);
+        if (delayMs < 0L) return;
+        h.postDelayed(albumArtRefreshTask, delayMs);
+    }
+
+    private static void resetAlbumArtRetryState() {
+        h.removeCallbacks(albumArtRefreshTask);
+        albumArtWaitingForReal = false;
+        albumArtRetryCount = 0;
+    }
+
+    private static void resetFixedWindowEditState() {
+        fixedWindowEditMode = false;
+        resizingFixedWindow = false;
+        pinchStartSpanX = 0f;
+        pinchStartWidth = 0;
+    }
+
+    private static void resetTouchState() {
+        dragging = false;
+        dragArmed = false;
+        longPressTriggered = false;
+        pendingLongPressTask = null;
+        downX = 0;
+        downY = 0;
+        downGravity = 0;
+        touchX = 0f;
+        touchY = 0f;
+        h.removeCallbacks(albumArtSingleTapTask);
+        lastTapUpMs = 0L;
+        lastAlbumArtTapUpMs = 0L;
+    }
+
+    private static void resetSeekState() {
+        seekTrackingActive = false;
+        seekTouchActive = false;
+        lastSeekProgressRefreshAt = 0L;
+        h.removeCallbacks(seekProgressTask);
+        if (seekBarView != null) seekBarView.setProgress(0);
+        lastSeekDebugReason = "reset";
+    }
+
+    private static void resetRenderedContentState() {
+        lastRenderedText = "";
+        lastTitle = "";
+        lastArtist = "";
+        lastAlbumArt = null;
+        controlsVisible = false;
+        lastDesign = -1;
+    }
+
+    private static void resetSessionTimingState() {
+        testModeUntilAt = 0L;
+        volumeDimUntilAt = 0L;
+        sessionVisibleUntilAt = 0L;
+        sessionContinuous = false;
+        pauseHideFrozen = false;
+        sessionRecoveryRestartRequested = false;
+        transientRecoveryNotBeforeAt = 0L;
+        lastControlledRecoveryAt = 0L;
+    }
+
+    private static void refreshAlbumArtOnMain() {
+        Context c = lastAppContext;
+        if (c == null || !albumArtWaitingForReal || lastTrackSnapshot == null || !lastTrackSnapshot.hasText()) return;
+        Prefs p = new Prefs(c);
+        if (!p.featureAlbumArt()) {
+            resetAlbumArtRetryState();
+            return;
+        }
+        TrackSnapshot refreshed = new MusicStateDetector(c).read();
+        if (refreshed != null && refreshed.hasText() && safeKey(refreshed).equals(safeKey(lastTrackSnapshot)) && refreshed.hasAlbumArt()) {
+            lastTrackSnapshot = new TrackSnapshot(
+                    refreshed.sourcePackage,
+                    refreshed.title,
+                    refreshed.artist,
+                    refreshed.playing,
+                    refreshed.sourceType,
+                    refreshed.albumArt,
+                    refreshed.durationMs,
+                    refreshed.positionMs
+            );
+            lastAlbumArt = refreshed.albumArt;
+            resetAlbumArtRetryState();
+            applyAlbumArt(c, p, refreshed.albumArt);
+            applySmartTextLayout(c, p, lastRenderedText);
+            return;
+        }
+        albumArtRetryCount++;
+        if (albumArtRetryCount < AlbumArtHelper.maxRetryCount()) {
+            h.postDelayed(albumArtRefreshTask, 900L);
+        } else {
+            resetAlbumArtRetryState();
         }
     }
 
@@ -444,35 +722,7 @@ public final class TrackOverlayManager {
 
     /** Подгоняет кнопки управления под текущий размер текста и делает ровные отступы сверху/снизу. */
     private static void applyControlsLayout(Context c, Prefs p){
-        if(controlsRow==null)return;
-        int textSize=Math.max(1,p.textSize());
-        float sizeScale = 1f;
-        if (p.controlsSize() == Prefs.CONTROLS_SIZE_SMALL) sizeScale = 0.88f;
-        else if (p.controlsSize() == Prefs.CONTROLS_SIZE_LARGE) sizeScale = 1.16f;
-        int buttonBaseDp=Math.max(34, Math.min(76, Math.round(textSize * 1.66f * sizeScale)));
-        int buttonWidthDp = controlButtonWidthDp(p, buttonBaseDp);
-        int buttonHeightDp = controlButtonHeightDp(buttonBaseDp);
-        int iconSp=Math.max(13, Math.min(30, Math.round(textSize * 0.78f * sizeScale)));
-        float spacingScale = p.controlsSpacing() == Prefs.CONTROLS_SPACING_COMPACT ? 0.78f
-                : (p.controlsSpacing() == Prefs.CONTROLS_SPACING_WIDE ? 1.38f : 1f);
-        int sideMargin=Math.max(4, Math.min(18, Math.round(textSize * 0.34f * spacingScale)));
-        int verticalGap=Math.max(8, Math.min(18, Math.round(textSize * 0.45f)));
-        int buttonWidthPx=Ui.dp(c,buttonWidthDp);
-        int buttonHeightPx=Ui.dp(c,buttonHeightDp);
-        int accent=p.controlsBorderColor();
-
-        controlsRow.setGravity(Gravity.CENTER);
-        controlsRow.setPadding(0, Ui.dp(c, verticalGap), 0, Ui.dp(c, verticalGap));
-        for(int i=0;i<controlsRow.getChildCount();i++){
-            TextView b=(TextView)controlsRow.getChildAt(i);
-            b.setTextSize(iconSp);
-            b.setIncludeFontPadding(false);
-            b.setGravity(Gravity.CENTER);
-            LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(buttonWidthPx,buttonHeightPx);
-            lp.setMargins(Ui.dp(c,sideMargin),0,Ui.dp(c,sideMargin),0);
-            b.setLayoutParams(lp);
-        }
-        applyControlButtonVisuals(c, p, buttonWidthDp, buttonHeightDp, accent);
+        MediaControlsLayoutHelper.applyControlsLayout(c, p, controlsRow);
     }
 
     private static void sendMediaKey(Context c,int keyCode){
@@ -547,7 +797,10 @@ public final class TrackOverlayManager {
         applyTrackText(p, lastTitle, lastArtist);
         updateSeekBarVisibility(panelView.getContext().getApplicationContext(), p);
         boolean coverVisible = albumArtView != null && albumArtView.getVisibility() == ImageView.VISIBLE;
-        lineView.setGravity(coverVisible ? (Gravity.START | Gravity.CENTER_VERTICAL) : resolveTextGravity(p, false, false));
+        boolean specialLayout = coverVisible && shouldUseExpandedFixedAlbumArt(p);
+        lineView.setGravity(coverVisible
+                ? (specialLayout ? (Gravity.CENTER_HORIZONTAL | Gravity.CENTER_VERTICAL) : (Gravity.START | Gravity.CENTER_VERTICAL))
+                : resolveTextGravity(p, false, false));
         lineView.setIncludeFontPadding(true);
         applyAlbumArtFrameStyle(panelView.getContext(), design, textSize, effectiveStroke);
         if(coverVisible){
@@ -645,137 +898,40 @@ public final class TrackOverlayManager {
         albumArtView.setBackground(Ui.stroke(bg, width, stroke, radius, c));
     }
 
-    private static int controlButtonHeightDp(int buttonBaseDp) {
-        return buttonBaseDp;
-    }
-
-    private static int controlButtonWidthDp(Prefs p, int buttonBaseDp) {
-        if (p.controlsShape() == Prefs.CONTROLS_SHAPE_RECT) {
-            return Math.round(buttonBaseDp * 1.38f);
-        }
-        return buttonBaseDp;
-    }
-
-    private static void applyControlButtonVisuals(Context c, Prefs p, int buttonWidthDp, int buttonHeightDp, int accent){
-        if(controlsRow==null)return;
-        int design = p.designPreset();
-        int fill = 0x331E293B;
-        int stroke = accent;
-        int width = 1;
-        int radius = Math.min(buttonWidthDp, buttonHeightDp) / 2;
-        int text = 0xFFFFFFFF;
-        float shadow = 0f;
-        int shadowColor = 0;
-        if(design==1){
-            fill = 0x14070A10;
-            stroke = 0x33000000;
-            width = 0;
-            radius = Math.max(Ui.dp(c, 10), Math.min(buttonWidthDp, buttonHeightDp) / 3);
-            text = 0xFFE2E8F0;
-        }else if(design==2){
-            fill = 0x33E7F6FF;
-            stroke = 0xAAE7F6FF;
-            width = 2;
-            radius = Math.max(Ui.dp(c, 16), Math.min(buttonWidthDp, buttonHeightDp) / 2);
-            text = 0xFFFFFFFF;
-            shadow = 8f;
-            shadowColor = 0x66E7F6FF;
-        }else if(design==3){
-            fill = 0x2600D5FF;
-            stroke = 0xFF00D5FF;
-            width = 2;
-            radius = Math.max(Ui.dp(c, 14), Math.min(buttonWidthDp, buttonHeightDp) / 2);
-            shadow = 7f;
-            shadowColor = 0x7700D5FF;
-        }else if(design==4){
-            fill = 0x33E8EEF8;
-            stroke = 0x88D8E5F7;
-            width = 1;
-            radius = Math.max(Ui.dp(c, 18), Math.min(buttonWidthDp, buttonHeightDp) / 2);
-            text = 0xFFF8FBFF;
-        }else if(design==5){
-            fill = 0xFF040607;
-            stroke = 0xFFF8FAFC;
-            width = 2;
-            radius = Math.max(Ui.dp(c, 12), Math.min(buttonWidthDp, buttonHeightDp) / 3);
-            shadow = 6f;
-            shadowColor = 0xCC000000;
-        }else if(design==6){
-            fill = 0x335E7EC0;
-            stroke = 0xFF95B8FF;
-            width = 2;
-            radius = Math.min(buttonWidthDp, buttonHeightDp) / 2;
-            shadow = 7f;
-            shadowColor = 0x6695B8FF;
-        }else if(design==7){
-            fill = 0x33D9C27A;
-            stroke = 0xFFD9C27A;
-            width = 2;
-            radius = Math.max(Ui.dp(c, 14), Math.min(buttonWidthDp, buttonHeightDp) / 2);
-            text = 0xFFFFF6DD;
-            shadow = 7f;
-            shadowColor = 0x77D9C27A;
-        }else if(design==8){
-            fill = 0x33FF6B6B;
-            stroke = 0xFFFF6B6B;
-            width = 2;
-            radius = Math.max(Ui.dp(c, 10), Math.min(buttonWidthDp, buttonHeightDp) / 3);
-            text = 0xFFFFF2F2;
-            shadow = 7f;
-            shadowColor = 0x66FF6B6B;
-        }else if(design==9){
-            fill = 0x338BE9FD;
-            stroke = 0xFF8BE9FD;
-            width = 2;
-            radius = Math.min(buttonWidthDp, buttonHeightDp) / 2;
-            text = 0xFFF4FBFF;
-            shadow = 8f;
-            shadowColor = 0x668BE9FD;
-        }
-        int shape = p.controlsShape();
-        if (shape == Prefs.CONTROLS_SHAPE_RECT) {
-            radius = Math.max(Ui.dp(c, 10), Math.round(buttonHeightDp * 0.22f));
-        } else if (shape == Prefs.CONTROLS_SHAPE_SQUARE) {
-            radius = Math.max(0, Ui.dp(c, 4));
-        } else if (shape == Prefs.CONTROLS_SHAPE_BORDERLESS) {
-            fill = 0x00000000;
-            stroke = 0x00000000;
-            width = 0;
-            radius = 0;
-            shadow = 0f;
-            shadowColor = 0;
-        }
-        for(int i=0;i<controlsRow.getChildCount();i++){
-            TextView b=(TextView)controlsRow.getChildAt(i);
-            b.setTextColor(text);
-            b.setBackground(Ui.stroke(fill, width, stroke, radius, c));
-            b.setShadowLayer(shadow, 0f, 0f, shadowColor);
-        }
-    }
-
     private static void updateControlsVisibility(Context c, Prefs p){
         if(controlsRow==null)return;
         controlsVisible=p.featureControls();
         controlsRow.setVisibility(controlsVisible?LinearLayout.VISIBLE:LinearLayout.GONE);
-        if(controlsVisible) applyControlsLayout(c,p);
+        if(controlsVisible) MediaControlsLayoutHelper.applyControlsLayout(c,p,controlsRow);
     }
 
     private static void updateSeekBarVisibility(Context c, Prefs p){
         if (seekContainer == null || seekBarView == null) return;
-        boolean showSeek = p.featureSeekBar() && p.displayWhilePlaying() && lastTrackSnapshot != null && lastTrackSnapshot.hasSeekRange();
+        boolean featureEnabled = p.featureSeekBar() && p.displayWhilePlaying();
+        boolean showSeek = featureEnabled && hasEffectiveSeekRange();
         if (!showSeek) {
+            lastSeekDebugReason = !featureEnabled ? "feature_disabled" : "no_range";
             seekContainer.setVisibility(LinearLayout.GONE);
             seekBarView.setProgress(0);
-            h.removeCallbacks(seekProgressTask);
+            if (featureEnabled && lastTrackSnapshot != null && lastTrackSnapshot.hasText()) {
+                lastSeekDebugReason = "waiting_range";
+                scheduleSeekProgressUpdates(c, false);
+            } else {
+                lastSeekDebugReason = !featureEnabled ? "feature_disabled" : "no_track";
+                h.removeCallbacks(seekProgressTask);
+            }
             return;
         }
+        lastSeekDebugReason = "visible";
         seekContainer.setVisibility(LinearLayout.VISIBLE);
         int top = Ui.dp(c, 5);
         int bottom = Ui.dp(c, p.featureControls() ? 3 : 6);
         seekContainer.setPadding(0, top, 0, bottom);
         applySeekBarColors(p);
         if (!seekTrackingActive) {
-            int progress = Math.max(0, Math.min(1000, Math.round((lastTrackSnapshot.positionMs / (float) Math.max(1L, lastTrackSnapshot.durationMs)) * 1000f)));
+            long duration = Math.max(1L, effectiveSeekDurationMs());
+            long position = Math.max(0L, effectiveSeekPositionMs());
+            int progress = Math.max(0, Math.min(1000, Math.round((position / (float) duration) * 1000f)));
             seekBarView.setProgress(progress);
         }
         scheduleSeekProgressUpdates(c, false);
@@ -795,20 +951,62 @@ public final class TrackOverlayManager {
         if (c != null) lastAppContext = c.getApplicationContext();
         h.removeCallbacks(seekProgressTask);
         if (seekBarView == null || seekContainer == null) return;
-        if (seekContainer.getVisibility() != LinearLayout.VISIBLE || seekTrackingActive || seekTouchActive || contentSoftHidden || !hostAttached) return;
+        if (seekTrackingActive) {
+            lastSeekDebugReason = "user_drag";
+            return;
+        }
+        if (seekTouchActive) {
+            lastSeekDebugReason = "touch_active";
+            return;
+        }
+        if (contentSoftHidden) {
+            lastSeekDebugReason = "content_hidden";
+            return;
+        }
+        if (!hostAttached) {
+            lastSeekDebugReason = "host_detached";
+            return;
+        }
+        lastSeekDebugReason = immediate ? "polling_now" : "polling_wait";
         h.postDelayed(seekProgressTask, immediate ? 0L : 850L);
     }
 
     private static void updateSeekProgressOnMain() {
         Context c = lastAppContext;
         if (c == null || seekBarView == null || seekContainer == null) return;
-        if (seekContainer.getVisibility() != LinearLayout.VISIBLE || seekTrackingActive || seekTouchActive || contentSoftHidden || !hostAttached) return;
+        if (seekTrackingActive) {
+            lastSeekDebugReason = "user_drag";
+            return;
+        }
+        if (seekTouchActive) {
+            lastSeekDebugReason = "touch_active";
+            return;
+        }
+        if (contentSoftHidden) {
+            lastSeekDebugReason = "content_hidden";
+            return;
+        }
+        if (!hostAttached) {
+            lastSeekDebugReason = "host_detached";
+            return;
+        }
         Prefs prefs = new Prefs(c);
-        if (!prefs.featureSeekBar() || !prefs.displayWhilePlaying()) return;
+        if (!prefs.featureSeekBar() || !prefs.displayWhilePlaying()) {
+            lastSeekDebugReason = "feature_disabled";
+            return;
+        }
         TrackSnapshot current = new MusicStateDetector(c).read();
-        TrackSnapshot liveBase = (current != null && current.hasText()) ? current : lastTrackSnapshot;
+        TrackSnapshot liveBase;
+        if (current != null && current.hasText() && current.hasSeekRange()) {
+            liveBase = current;
+        } else if (lastTrackSnapshot != null && lastTrackSnapshot.hasText()) {
+            liveBase = lastTrackSnapshot;
+        } else {
+            liveBase = current;
+        }
         current = MusicStateDetector.enrichWithLivePlaybackState(c, liveBase);
         if (current == null || !current.hasText()) {
+            lastSeekDebugReason = "no_track";
             if (lastTrackSnapshot != null && lastTrackSnapshot.hasText()) {
                 scheduleSeekProgressUpdates(c, false);
             } else {
@@ -816,13 +1014,12 @@ public final class TrackOverlayManager {
             }
             return;
         }
-        if (!current.hasSeekRange()) {
-            scheduleSeekProgressUpdates(c, false);
-            return;
-        }
+        syncSeekSessionState(current);
         if (!safeKey(current).equals(safeKey(lastTrackSnapshot))) {
             lastTrackSnapshot = current;
         } else {
+            long duration = current.durationMs > 1000L ? current.durationMs : effectiveSeekDurationMs();
+            long position = current.positionMs >= 0L ? current.positionMs : effectiveSeekPositionMs();
             lastTrackSnapshot = new TrackSnapshot(
                     current.sourcePackage,
                     current.title,
@@ -830,13 +1027,27 @@ public final class TrackOverlayManager {
                     current.playing,
                     current.sourceType,
                     current.albumArt != null ? current.albumArt : lastTrackSnapshot.albumArt,
-                    current.durationMs,
-                    current.positionMs
+                    duration,
+                    position
             );
         }
-        int progress = Math.max(0, Math.min(1000, Math.round((lastTrackSnapshot.positionMs / (float) Math.max(1L, lastTrackSnapshot.durationMs)) * 1000f)));
+        if (!hasEffectiveSeekRange()) {
+            lastSeekDebugReason = "no_range";
+            if (seekContainer.getVisibility() == LinearLayout.VISIBLE) {
+                updateSeekBarVisibility(c, prefs);
+            }
+            scheduleSeekProgressUpdates(c, false);
+            return;
+        }
+        if (seekContainer.getVisibility() != LinearLayout.VISIBLE) {
+            updateSeekBarVisibility(c, prefs);
+        }
+        long duration = Math.max(1L, effectiveSeekDurationMs());
+        long position = Math.max(0L, effectiveSeekPositionMs());
+        int progress = Math.max(0, Math.min(1000, Math.round((position / (float) duration) * 1000f)));
         seekBarView.setProgress(progress);
         lastSeekProgressRefreshAt = SystemClock.uptimeMillis();
+        lastSeekDebugReason = "polling";
         scheduleSeekProgressUpdates(c, false);
     }
 
@@ -845,13 +1056,53 @@ public final class TrackOverlayManager {
         return clean(track.sourcePackage) + "|" + clean(track.artist) + "|" + clean(track.title);
     }
 
+    private static void syncSeekSessionState(TrackSnapshot snapshot) {
+        if (snapshot == null || !snapshot.hasText()) return;
+        if (seekSession.matches(snapshot)) {
+            if (snapshot.hasSeekRange()) {
+                seekSession.updateFromSnapshot(snapshot);
+            } else {
+                seekSession.markPlaying(snapshot.playing);
+            }
+            return;
+        }
+        if (snapshot.hasSeekRange()) {
+            seekSession.updateFromSnapshot(snapshot);
+        } else {
+            seekSession.reset();
+        }
+    }
+
+    private static boolean hasEffectiveSeekRange() {
+        return lastTrackSnapshot != null
+                && lastTrackSnapshot.hasText()
+                && (lastTrackSnapshot.hasSeekRange() || (seekSession.matches(lastTrackSnapshot) && seekSession.hasRange()));
+    }
+
+    private static long effectiveSeekDurationMs() {
+        if (lastTrackSnapshot != null && lastTrackSnapshot.durationMs > 1000L) return lastTrackSnapshot.durationMs;
+        return seekSession.hasRange() ? seekSession.durationMs() : -1L;
+    }
+
+    private static long effectiveSeekPositionMs() {
+        if (lastTrackSnapshot != null && lastTrackSnapshot.hasSeekRange()) {
+            return Math.max(0L, lastTrackSnapshot.positionMs);
+        }
+        if (lastTrackSnapshot != null && seekSession.matches(lastTrackSnapshot) && seekSession.hasRange()) {
+            return seekSession.estimatePositionNow();
+        }
+        return -1L;
+    }
+
     private static void trySeekCurrentPosition(int progress) {
-        if (lastTrackSnapshot == null || !lastTrackSnapshot.hasSeekRange()) return;
+        if (lastTrackSnapshot == null || !lastTrackSnapshot.hasText()) return;
         Context c = lastAppContext;
         if (c == null) return;
-        long duration = Math.max(1L, lastTrackSnapshot.durationMs);
+        long duration = effectiveSeekDurationMs();
+        if (duration <= 0L) return;
         long target = Math.min(duration, Math.max(0L, Math.round((progress / 1000f) * duration)));
         boolean ok = MusicStateDetector.seekTo(c, lastTrackSnapshot.sourcePackage, target);
+        lastSeekDebugReason = ok ? "seek_ok" : "seek_failed";
         if (ok) {
             lastTrackSnapshot = new TrackSnapshot(
                     lastTrackSnapshot.sourcePackage,
@@ -860,9 +1111,10 @@ public final class TrackOverlayManager {
                     lastTrackSnapshot.playing,
                     lastTrackSnapshot.sourceType,
                     lastTrackSnapshot.albumArt,
-                    lastTrackSnapshot.durationMs,
+                    duration,
                     target
             );
+            seekSession.applyUserSeek(target);
         }
     }
 
@@ -875,6 +1127,12 @@ public final class TrackOverlayManager {
     }
 
     private static void restartHideTimerForMs(int ms){
+        h.removeCallbacks(hideTask);
+        h.removeCallbacks(testHideTask);
+        if(ms>0) h.postDelayed(hideTask, ms);
+    }
+
+    private static void restartTestHideTimerForMs(int ms){
         h.removeCallbacks(hideTask);
         h.removeCallbacks(testHideTask);
         if(ms>0) h.postDelayed(testHideTask, ms);
@@ -895,6 +1153,7 @@ public final class TrackOverlayManager {
         int measureSafety=Ui.dp(c,18);
         boolean coverVisible = albumArtView != null && albumArtView.getVisibility() == ImageView.VISIBLE;
         boolean fixedWindow = p.featureFixedWindow();
+        boolean specialLayout = coverVisible && shouldUseExpandedFixedAlbumArt(p);
         int artWidth = coverVisible && albumArtView.getLayoutParams() != null ? albumArtView.getLayoutParams().width : 0;
         int artGap = coverVisible ? Ui.dp(c, Math.max(10, Math.min(18, Math.round(Math.max(1, p.textSize()) * 0.42f)))) : 0;
         int maxTextWidth=Math.max(Ui.dp(c,80), maxWindowWidth - horizontalPadding - measureSafety - artWidth - artGap);
@@ -909,7 +1168,9 @@ public final class TrackOverlayManager {
         cancelMarquee();
         lineView.setScrollX(0);
         lineView.setHorizontallyScrolling(fixedWindow);
-        lineView.setGravity(coverVisible ? (Gravity.START | Gravity.CENTER_VERTICAL) : resolveTextGravity(p, false, fixedWindow));
+        lineView.setGravity(coverVisible
+                ? (specialLayout ? (Gravity.CENTER_HORIZONTAL | Gravity.CENTER_VERTICAL) : (Gravity.START | Gravity.CENTER_VERTICAL))
+                : resolveTextGravity(p, false, fixedWindow));
         lineView.setIncludeFontPadding(true);
         lineView.setBreakStrategy(android.text.Layout.BREAK_STRATEGY_HIGH_QUALITY);
         lineView.setHyphenationFrequency(android.text.Layout.HYPHENATION_FREQUENCY_NONE);
@@ -946,7 +1207,9 @@ public final class TrackOverlayManager {
             float spacingScale = p.controlsSpacing() == Prefs.CONTROLS_SPACING_COMPACT ? 0.78f
                     : (p.controlsSpacing() == Prefs.CONTROLS_SPACING_WIDE ? 1.38f : 1f);
             int buttonBaseDp=Math.max(34, Math.min(76, Math.round(Math.max(1,p.textSize()) * 1.66f * sizeScale)));
-            int buttonWidthDp=controlButtonWidthDp(p, buttonBaseDp);
+            int buttonWidthDp = p.controlsShape() == Prefs.CONTROLS_SHAPE_RECT
+                    ? Math.round(buttonBaseDp * 1.38f)
+                    : buttonBaseDp;
             int controlSideMargin=Math.max(4, Math.min(18, Math.round(Math.max(1,p.textSize()) * 0.34f * spacingScale)));
             targetWidth=Math.max(targetWidth, Ui.dp(c, buttonWidthDp*3 + controlSideMargin*6 + 24));
         }
@@ -983,7 +1246,9 @@ public final class TrackOverlayManager {
             if (fixedWindow) {
                 applyFixedWindowTextBehavior(textWidth, measuredTextWidth);
             } else {
-                lineView.setGravity(coverVisible ? (Gravity.START | Gravity.CENTER_VERTICAL) : resolveTextGravity(p, false, false));
+                lineView.setGravity(coverVisible
+                        ? (specialLayout ? (Gravity.CENTER_HORIZONTAL | Gravity.CENTER_VERTICAL) : (Gravity.START | Gravity.CENTER_VERTICAL))
+                        : resolveTextGravity(p, false, false));
             }
         }catch(Exception ignored){}
 
@@ -1099,7 +1364,7 @@ public final class TrackOverlayManager {
         try{
             if(panelView!=null){
                 Prefs prefs = new Prefs(c);
-                applyPanelBackground(c, prefs.bgColor(), 2, 0xAAFFFFFF, Math.max(8, prefs.corner()), prefs.windowAlpha(), prefs.designPreset());
+            OverlayRenderHelper.applyPanelBackground(c, panelView, prefs.bgColor(), 2, 0xAAFFFFFF, Math.max(8, prefs.corner()), prefs.windowAlpha(), prefs.designPreset());
             }
         }catch(Exception ignored){}
         refresh(c);
@@ -1316,9 +1581,12 @@ public final class TrackOverlayManager {
                 } else {
                     if(!dragging && smallMove) lastTapUpMs=now;
                     if(dragging) {
-                        if(touchPrefs.featureSnap()) snapToNearestZone(c);
-                        touchPrefs.setOverlayPosition(currentParams.x,currentParams.y);
-                        lastAppliedCustomPosition=true;
+                        if(touchPrefs.featureSnap()) {
+                            snapToNearestZone(c);
+                        } else {
+                            touchPrefs.setOverlayPosition(currentParams.x,currentParams.y);
+                            lastAppliedCustomPosition=true;
+                        }
                         if(fixedWindowEditMode) keepEditModeAlive();
                     }
                 }
@@ -1340,6 +1608,7 @@ public final class TrackOverlayManager {
 
     private static void snapToNearestZone(Context c){
         if(currentParams==null)return;
+        Prefs prefs = new Prefs(c);
         DisplayMetrics dm=getRealDisplayMetrics(c);
         int screenW=Math.max(dm.widthPixels,Ui.dp(c,320));
         int screenH=Math.max(dm.heightPixels,Ui.dp(c,320));
@@ -1355,26 +1624,46 @@ public final class TrackOverlayManager {
         int top=safe+Ui.dp(c,8);
         int centerY=Math.max(safe,(screenH-height)/2);
         int bottom=Math.max(safe,screenH-height-safe-Ui.dp(c,8));
-
-        int[] xs=new int[]{left,centerX,right};
-        int[] ys=new int[]{top,centerY,bottom};
+        int upperMidY = top + Math.max(0, (centerY - top) / 2);
+        int lowerMidY = centerY + Math.max(0, (bottom - centerY) / 2);
+        int[][] presets=new int[][]{
+                {0, left, top},
+                {1, centerX, top},
+                {2, right, top},
+                {7, left, upperMidY},
+                {8, centerX, upperMidY},
+                {9, right, upperMidY},
+                {10, left, centerY},
+                {3, centerX, centerY},
+                {11, right, centerY},
+                {12, left, lowerMidY},
+                {13, centerX, lowerMidY},
+                {14, right, lowerMidY},
+                {4, left, bottom},
+                {5, centerX, bottom},
+                {6, right, bottom}
+        };
         int currentCenterX=currentParams.x+width/2;
         int currentCenterY=currentParams.y+height/2;
-        int bestX=centerX,bestY=top;
+        int bestPreset=1;
         long best=Long.MAX_VALUE;
-        for(int sx:xs){
-            for(int sy:ys){
-                int cx=sx+width/2;
-                int cy=sy+height/2;
-                long dx=cx-currentCenterX;
-                long dy=cy-currentCenterY;
-                long dist=dx*dx+dy*dy;
-                if(dist<best){ best=dist; bestX=sx; bestY=sy; }
+        for(int[] preset : presets){
+            int sx=preset[1];
+            int sy=preset[2];
+            int cx=sx+width/2;
+            int cy=sy+height/2;
+            long dx=cx-currentCenterX;
+            long dy=cy-currentCenterY;
+            long dist=dx*dx+dy*dy;
+            if(dist<best){
+                best=dist;
+                bestPreset=preset[0];
             }
         }
-        currentParams.gravity=Gravity.TOP|Gravity.START;
-        currentParams.x=Math.max(safe,Math.min(bestX,screenW-width-safe));
-        currentParams.y=Math.max(safe,Math.min(bestY,screenH-height-safe));
+        prefs.setSnapPosition(bestPreset);
+        currentParams=params(c,prefs);
+        lastAppliedCustomPosition=false;
+        lastAppliedPosition=prefs.position();
         try{wm.updateViewLayout(overlayView,currentParams);}catch(Exception ignored){}
     }
 
@@ -1401,14 +1690,26 @@ public final class TrackOverlayManager {
         int edgeY = Ui.dp(c, Math.max(0, p.paddingY()));
         int centerShiftX = Ui.dp(c, p.paddingX() - 20);
         int centerShiftY = Ui.dp(c, p.paddingY() - 14);
+        DisplayMetrics dm = getRealDisplayMetrics(c);
+        int upperMidY = Math.max(edgeY, Math.max(0, dm.heightPixels / 4) + centerShiftY / 2);
+        int lowerMidY = Math.max(edgeY, Math.max(0, dm.heightPixels / 4) - centerShiftY / 2);
         if(p.customPosition()){ lp.gravity=Gravity.TOP|Gravity.START; lp.x=Math.max(0,p.overlayX()); lp.y=Math.max(0,p.overlayY()); return lp; }
-        int pos=p.position();
+        int pos=p.snapPosition() >= 0 ? p.snapPosition() : p.position();
         if(pos==0){lp.gravity=Gravity.TOP|Gravity.START;lp.x=edgeX;lp.y=edgeY;}
+        else if(pos==1){lp.gravity=Gravity.TOP|Gravity.CENTER_HORIZONTAL;lp.x=centerShiftX;lp.y=edgeY;}
         else if(pos==2){lp.gravity=Gravity.TOP|Gravity.END;lp.x=edgeX;lp.y=edgeY;}
         else if(pos==3){lp.gravity=Gravity.CENTER;lp.x=centerShiftX;lp.y=centerShiftY;}
         else if(pos==4){lp.gravity=Gravity.BOTTOM|Gravity.START;lp.x=edgeX;lp.y=edgeY;}
         else if(pos==5){lp.gravity=Gravity.BOTTOM|Gravity.CENTER_HORIZONTAL;lp.x=centerShiftX;lp.y=edgeY;}
         else if(pos==6){lp.gravity=Gravity.BOTTOM|Gravity.END;lp.x=edgeX;lp.y=edgeY;}
+        else if(pos==7){lp.gravity=Gravity.TOP|Gravity.START;lp.x=edgeX;lp.y=upperMidY;}
+        else if(pos==8){lp.gravity=Gravity.TOP|Gravity.CENTER_HORIZONTAL;lp.x=centerShiftX;lp.y=upperMidY;}
+        else if(pos==9){lp.gravity=Gravity.TOP|Gravity.END;lp.x=edgeX;lp.y=upperMidY;}
+        else if(pos==10){lp.gravity=Gravity.CENTER_VERTICAL|Gravity.START;lp.x=edgeX;lp.y=centerShiftY;}
+        else if(pos==11){lp.gravity=Gravity.CENTER_VERTICAL|Gravity.END;lp.x=edgeX;lp.y=centerShiftY;}
+        else if(pos==12){lp.gravity=Gravity.BOTTOM|Gravity.START;lp.x=edgeX;lp.y=lowerMidY;}
+        else if(pos==13){lp.gravity=Gravity.BOTTOM|Gravity.CENTER_HORIZONTAL;lp.x=centerShiftX;lp.y=lowerMidY;}
+        else if(pos==14){lp.gravity=Gravity.BOTTOM|Gravity.END;lp.x=edgeX;lp.y=lowerMidY;}
         else {lp.gravity=Gravity.TOP|Gravity.CENTER_HORIZONTAL;lp.x=centerShiftX;lp.y=edgeY;}
         return lp;
     }
@@ -1423,8 +1724,8 @@ public final class TrackOverlayManager {
             int basePercent = Math.max(15, Math.min(100, prefs.windowAlpha()));
             int dimPercent = Math.max(12, Math.round(basePercent * 0.35f));
             volumeDimUntilAt = SystemClock.uptimeMillis() + 900L;
-            applyPanelBackgroundAlpha(dimPercent);
-            applyContentDimAlpha(0.38f);
+            OverlayRenderHelper.applyPanelBackgroundAlpha(panelView, dimPercent);
+            OverlayRenderHelper.applyContentDimAlpha(lineView, albumArtView, controlsRow, seekContainer, 0.38f);
         }catch(Exception ignored){}
             h.removeCallbacks(undimTask);
             h.postDelayed(undimTask,900);
@@ -1435,63 +1736,33 @@ public final class TrackOverlayManager {
         if(panelView==null)return;
         volumeDimUntilAt = 0L;
         try{
-            applyPanelBackgroundAlpha(Math.max(15,Math.min(100,new Prefs(panelView.getContext()).windowAlpha())));
-            applyContentDimAlpha(1f);
+            OverlayRenderHelper.applyPanelBackgroundAlpha(panelView, Math.max(15,Math.min(100,new Prefs(panelView.getContext()).windowAlpha())));
+            OverlayRenderHelper.applyContentDimAlpha(lineView, albumArtView, controlsRow, seekContainer, 1f);
         }catch(Exception ignored){}
     }
 
     private static int effectiveWindowAlphaPercent(Prefs prefs) {
-        int basePercent = Math.max(15, Math.min(100, prefs.windowAlpha()));
-        if (volumeDimUntilAt > SystemClock.uptimeMillis()) {
-            return Math.max(12, Math.round(basePercent * 0.35f));
-        }
-        return basePercent;
+        return OverlayRenderHelper.effectiveWindowAlphaPercent(prefs, volumeDimUntilAt, SystemClock.uptimeMillis());
     }
 
     private static void applyPanelBackground(Context c, int bgColor, int strokeWidth, int strokeColor, int corner, int alphaPercent, int design) {
-        if (panelView == null) return;
-        Drawable drawable;
-        if (design == 2) {
-            drawable = new OverlayShapeDrawable(bgColor, strokeColor, Ui.dp(c, corner), Ui.dp(c, strokeWidth), OverlayShapeDrawable.STYLE_WAVE);
-        } else if (design == 3) {
-            drawable = new OverlayShapeDrawable(bgColor, strokeColor, Ui.dp(c, corner), Ui.dp(c, strokeWidth), OverlayShapeDrawable.STYLE_TECH);
-        } else if (design == 8) {
-            drawable = new OverlayShapeDrawable(bgColor, strokeColor, Ui.dp(c, corner), Ui.dp(c, strokeWidth), OverlayShapeDrawable.STYLE_SPIKES);
-        } else if (design == 9) {
-            drawable = new OverlayShapeDrawable(bgColor, strokeColor, Ui.dp(c, corner), Ui.dp(c, strokeWidth), OverlayShapeDrawable.STYLE_OVAL);
-        } else if (design == 7) {
-            drawable = new OverlayShapeDrawable(bgColor, strokeColor, Ui.dp(c, corner), Ui.dp(c, strokeWidth), OverlayShapeDrawable.STYLE_PREMIUM);
-        } else {
-            drawable = Ui.stroke(bgColor, strokeWidth, strokeColor, corner, c);
-        }
-        drawable.mutate().setAlpha(windowPercentToDrawableAlpha(alphaPercent));
-        panelView.setBackground(drawable);
+        OverlayRenderHelper.applyPanelBackground(c, panelView, bgColor, strokeWidth, strokeColor, corner, alphaPercent, design);
     }
 
     private static void applyPanelBackgroundAlpha(int alphaPercent) {
-        if (panelView == null) return;
-        Drawable bg = panelView.getBackground();
-        if (bg == null) return;
-        bg.mutate().setAlpha(windowPercentToDrawableAlpha(alphaPercent));
-        panelView.invalidate();
+        OverlayRenderHelper.applyPanelBackgroundAlpha(panelView, alphaPercent);
     }
 
     private static void applyContentDimAlpha(float alpha) {
-        if (lineView != null) lineView.setAlpha(alpha);
-        if (albumArtView != null) albumArtView.setAlpha(albumArtView.getVisibility() == ImageView.VISIBLE ? alpha : 0f);
-        if (controlsRow != null) controlsRow.setAlpha(alpha);
-        if (seekContainer != null) seekContainer.setAlpha(alpha);
+        OverlayRenderHelper.applyContentDimAlpha(lineView, albumArtView, controlsRow, seekContainer, alpha);
     }
 
     private static int windowPercentToDrawableAlpha(int alphaPercent) {
-        int clamped = Math.max(0, Math.min(100, alphaPercent));
-        return Math.round(255f * (clamped / 100f));
+        return OverlayRenderHelper.windowPercentToDrawableAlpha(alphaPercent);
     }
 
     private static boolean sameBitmap(Bitmap a, Bitmap b) {
-        if (a == b) return true;
-        if (a == null || b == null) return false;
-        return a.getWidth() == b.getWidth() && a.getHeight() == b.getHeight();
+        return OverlayRenderHelper.sameBitmap(a, b);
     }
 
     public static void refresh(Context c){
@@ -1561,14 +1832,8 @@ public final class TrackOverlayManager {
     private static void transientHoldOnMain() {
         h.removeCallbacks(collapseHiddenHostTask);
         cancelLongPressTask();
-        fixedWindowEditMode = false;
-        resizingFixedWindow = false;
-        pinchStartSpanX = 0f;
-        pinchStartWidth = 0;
-        dragging = false;
-        dragArmed = false;
-        longPressTriggered = false;
-        pendingLongPressTask = null;
+        resetFixedWindowEditState();
+        resetTouchState();
         contentSoftHidden = true;
         setOverlayCollapsedFootprint(false);
         if (panelView != null) {
@@ -1602,23 +1867,16 @@ public final class TrackOverlayManager {
 
     private static void hideContentOnMain() {
         cancelMarquee();
-        fixedWindowEditMode = false;
-        resizingFixedWindow = false;
-        pinchStartSpanX = 0f;
-        pinchStartWidth = 0;
-        dragging = false;
-        dragArmed = false;
-        longPressTriggered = false;
-        pendingLongPressTask = null;
-        h.removeCallbacks(albumArtSingleTapTask);
+        resetFixedWindowEditState();
+        resetTouchState();
+        resetAlbumArtRetryState();
         if (albumArtView != null) {
             albumArtView.setImageDrawable(null);
             albumArtView.setAlpha(0f);
             albumArtView.setVisibility(ImageView.GONE);
         }
         if (seekContainer != null) seekContainer.setVisibility(LinearLayout.GONE);
-        if (seekBarView != null) seekBarView.setProgress(0);
-        h.removeCallbacks(seekProgressTask);
+        resetSeekState();
         if (lineView != null) {
             lineView.setText("");
             lineView.setScrollX(0);
@@ -1636,6 +1894,7 @@ public final class TrackOverlayManager {
             panelView.setAlpha(0f);
         }
         sessionContinuous = false;
+        pauseHideFrozen = false;
         sessionVisibleUntilAt = 0L;
         sessionRecoveryRestartRequested = false;
         transientRecoveryNotBeforeAt = 0L;
@@ -1688,10 +1947,8 @@ public final class TrackOverlayManager {
     private static void clearOverlayState() {
         h.removeCallbacks(collapseHiddenHostTask);
         cancelMarquee();
-        fixedWindowEditMode = false;
-        resizingFixedWindow = false;
-        pinchStartSpanX = 0f;
-        pinchStartWidth = 0;
+        resetAlbumArtRetryState();
+        resetFixedWindowEditState();
         if (controlsRow != null) {
             controlsRow.removeAllViews();
         }
@@ -1719,37 +1976,16 @@ public final class TrackOverlayManager {
         currentParams = null;
         hostAttached = false;
         contentSoftHidden = false;
-        lastRenderedText = "";
-        lastTitle = "";
-        lastArtist = "";
-        lastAlbumArt = null;
+        resetRenderedContentState();
         lastAppliedPosition = -1;
         lastAppliedCustomPosition = false;
         lastAppliedOffsetX = -1;
         lastAppliedOffsetY = -1;
-        controlsVisible = false;
-        lastDesign = -1;
-        testModeUntilAt = 0L;
-        volumeDimUntilAt = 0L;
-        sessionVisibleUntilAt = 0L;
-        sessionContinuous = false;
-        sessionRecoveryRestartRequested = false;
-        transientRecoveryNotBeforeAt = 0L;
-        lastControlledRecoveryAt = 0L;
+        resetSessionTimingState();
         lastAppContext = null;
-        lastSeekProgressRefreshAt = 0L;
-        downX = 0;
-        downY = 0;
-        downGravity = 0;
-        touchX = 0f;
-        touchY = 0f;
-        dragging = false;
-        dragArmed = false;
-        longPressTriggered = false;
-        pendingLongPressTask = null;
-        h.removeCallbacks(albumArtSingleTapTask);
-        lastTapUpMs = 0L;
-        lastAlbumArtTapUpMs = 0L;
+        resetSeekState();
+        seekSession.reset();
+        resetTouchState();
     }
 
     private static void hardResetOverlay() {
@@ -1782,6 +2018,9 @@ public final class TrackOverlayManager {
         String effectiveArtist = clean(artist).isEmpty() ? lastArtist : artist;
         Bitmap effectiveAlbumArt = albumArt != null ? albumArt : lastAlbumArt;
         if (isHostActuallyVisible()) {
+            if (seekContainer != null && seekContainer.getVisibility() == LinearLayout.VISIBLE) {
+                scheduleSeekProgressUpdates(c, true);
+            }
             if (sessionRecoveryRestartRequested) {
                 restoreVisibleContentState();
                 applyTrackText(prefs, effectiveTitle, effectiveArtist);
@@ -1792,10 +2031,12 @@ public final class TrackOverlayManager {
                     testModeUntilAt = now + TEST_DISPLAY_MS;
                     sessionContinuous = false;
                     sessionVisibleUntilAt = testModeUntilAt;
-                    restartHideTimerForMs(TEST_DISPLAY_MS);
+                    restartTestHideTimerForMs(TEST_DISPLAY_MS);
                 } else if (prefs.displayWhilePlaying()) {
                     sessionContinuous = true;
                     sessionVisibleUntilAt = Long.MAX_VALUE;
+                    h.removeCallbacks(hideTask);
+                } else if (pauseHideFrozen) {
                     h.removeCallbacks(hideTask);
                 } else {
                     int ms = Math.max(1000, prefs.displayMs());
@@ -1841,11 +2082,14 @@ public final class TrackOverlayManager {
     private static void detachHostKeepSessionState() {
         h.removeCallbacks(collapseHiddenHostTask);
         cancelLongPressTask();
+        resetAlbumArtRetryState();
         removeOldViewSafely();
         cancelMarquee();
         overlayView = null;
         panelView = null;
         contentRow = null;
+        specialFixedRow = null;
+        specialRightColumn = null;
         albumArtView = null;
         lineView = null;
         controlsRow = null;
@@ -1859,18 +2103,9 @@ public final class TrackOverlayManager {
         lastDesign = -1;
         lastRenderedText = "";
         lastTrackSnapshot = TrackSnapshot.empty();
-        seekTrackingActive = false;
-        seekTouchActive = false;
-        h.removeCallbacks(seekProgressTask);
-        h.removeCallbacks(albumArtSingleTapTask);
-        fixedWindowEditMode = false;
-        resizingFixedWindow = false;
-        pinchStartSpanX = 0f;
-        pinchStartWidth = 0;
-        dragging = false;
-        dragArmed = false;
-        longPressTriggered = false;
-        pendingLongPressTask = null;
+        resetSeekState();
+        resetTouchState();
+        resetFixedWindowEditState();
     }
 
     private static void applyTrackText(Prefs p, String title, String artist) {

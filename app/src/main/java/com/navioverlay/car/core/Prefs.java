@@ -12,6 +12,8 @@ import java.util.Set;
 
 public class Prefs {
     private static final String FILE = "navioverlay_prefs_v4";
+    private static final String KEY_SCHEMA_VERSION = "pref_schema_version";
+    private static final int SCHEMA_VERSION = 1;
     private static final String KEY_RECENT_TRACKS = "recent_tracks_json";
     private static final int MAX_RECENT_TRACKS = 30;
     public static final int TEXT_ALIGN_LEFT = 0;
@@ -34,12 +36,14 @@ public class Prefs {
     public Prefs(Context c) {
         sp = c.getApplicationContext().getSharedPreferences(FILE, Context.MODE_PRIVATE);
         ensureDefaults();
+        migrateIfNeeded();
     }
 
     private void ensureDefaults() {
         if (!sp.contains("inited")) {
             sp.edit()
                     .putBoolean("inited", true)
+                    .putInt(KEY_SCHEMA_VERSION, SCHEMA_VERSION)
                     .putBoolean("enabled", false)
                     .putBoolean("show_only_with_trigger", true)
                     .putStringSet("triggers", new HashSet<>(Arrays.asList(Constants.DEFAULT_TRIGGER_PACKAGES)))
@@ -63,6 +67,8 @@ public class Prefs {
                     .putInt("display_ms", 5000)
                     .putBoolean("display_while_playing", false)
                     .putInt("position", 1)
+                    .putInt("selected_position", 1)
+                    .putInt("snap_position", -1)
                     .putBoolean("custom_position", false)
                     .putInt("overlay_x", 0)
                     .putInt("overlay_y", 0)
@@ -89,9 +95,42 @@ public class Prefs {
                     .putInt("design_preset", 0)
                     .putString("last_trigger_package", "")
                     .putLong("last_trigger_at", 0L)
+                    .putString("last_seen_track_package", "")
+                    .putString("last_seen_track_artist", "")
+                    .putString("last_seen_track_title", "")
+                    .putLong("last_seen_track_at", 0L)
+                    .putString("last_system_window_type", "")
+                    .putLong("last_system_window_at", 0L)
                     .putBoolean("english_ui", false)
                     .apply();
         }
+    }
+
+    private void migrateIfNeeded() {
+        int version = sp.getInt(KEY_SCHEMA_VERSION, 0);
+        SharedPreferences.Editor e = sp.edit();
+        if (version < SCHEMA_VERSION) {
+            e.putInt(KEY_SCHEMA_VERSION, SCHEMA_VERSION);
+        }
+        normalizeStoredRanges(e);
+        e.apply();
+    }
+
+    private void normalizeStoredRanges(SharedPreferences.Editor e) {
+        e.putInt("window_alpha", clamp(sp.getInt("window_alpha", 88), 5, 100));
+        e.putInt("text_size", clamp(sp.getInt("text_size", 22), 1, 100));
+        e.putInt("display_ms", clamp(sp.getInt("display_ms", 5000), 1000, 60000));
+        e.putInt("position", clamp(sp.getInt("position", 1), 0, 14));
+        e.putInt("selected_position", clamp(sp.getInt("selected_position", sp.getInt("position", 1)), 0, 14));
+        e.putInt("corner", clamp(sp.getInt("corner", 18), 0, 60));
+        e.putInt("padding_x", clamp(sp.getInt("padding_x", 20), 0, 80));
+        e.putInt("padding_y", clamp(sp.getInt("padding_y", 14), 0, 80));
+        e.putInt("nav_grace_ms", clamp(sp.getInt("nav_grace_ms", 30000), 0, 300000));
+        e.putInt("fixed_window_width", clamp(sp.getInt("fixed_window_width", 0), 0, 10000));
+        e.putInt("design_preset", clamp(sp.getInt("design_preset", 0), 0, 9));
+        e.putInt("border_width", clamp(sp.getInt("border_width", 1), 0, 12));
+        e.putInt("text_align", clamp(sp.getInt("text_align", TEXT_ALIGN_CENTER), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER));
+        e.putInt("text_font", clamp(sp.getInt("text_font", 0), 0, Math.max(0, OverlayFonts.count() - 1)));
     }
 
     public boolean enabled() { return sp.getBoolean("enabled", false); }
@@ -130,8 +169,8 @@ public class Prefs {
     public int borderColor() { return sp.getInt("border_color", 0x66FFFFFF); }
     public void setBorderColor(int v) { sp.edit().putInt("border_color", v).apply(); }
 
-    public int borderWidth() { return sp.getInt("border_width", 1); }
-    public void setBorderWidth(int v) { sp.edit().putInt("border_width", Math.max(0, Math.min(12, v))).apply(); }
+    public int borderWidth() { return clamp(sp.getInt("border_width", 1), 0, 12); }
+    public void setBorderWidth(int v) { sp.edit().putInt("border_width", clamp(v, 0, 12)).apply(); }
 
     public int controlsBorderColor() { return sp.getInt("controls_border_color", 0xFF00D5FF); }
     public void setControlsBorderColor(int v) { sp.edit().putInt("controls_border_color", v).apply(); }
@@ -140,49 +179,72 @@ public class Prefs {
     public int seekThumbColor() { return sp.getInt("seek_thumb_color", 0xFFFFFFFF); }
     public void setSeekThumbColor(int v) { sp.edit().putInt("seek_thumb_color", v).apply(); }
 
-    public int windowAlpha() { return sp.getInt("window_alpha", 88); }
-    public void setWindowAlpha(int v) { sp.edit().putInt("window_alpha", v).apply(); }
+    public int windowAlpha() { return clamp(sp.getInt("window_alpha", 88), 5, 100); }
+    public void setWindowAlpha(int v) { sp.edit().putInt("window_alpha", clamp(v, 5, 100)).apply(); }
 
-    public int textSize() { return sp.getInt("text_size", 22); }
-    public void setTextSize(int v) { sp.edit().putInt("text_size", v).apply(); }
+    public int textSize() { return clamp(sp.getInt("text_size", 22), 1, 100); }
+    public void setTextSize(int v) { sp.edit().putInt("text_size", clamp(v, 1, 100)).apply(); }
 
     public boolean textBold() { return sp.getBoolean("text_bold", true); }
     public void setTextBold(boolean v) { sp.edit().putBoolean("text_bold", v).apply(); }
 
     public boolean textShadow() { return sp.getBoolean("text_shadow", true); }
     public void setTextShadow(boolean v) { sp.edit().putBoolean("text_shadow", v).apply(); }
-    public int textAlign() { return sp.getInt("text_align", TEXT_ALIGN_CENTER); }
+    public int textAlign() { return clamp(sp.getInt("text_align", TEXT_ALIGN_CENTER), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER); }
     public void setTextAlign(int v) { sp.edit().putInt("text_align", v == TEXT_ALIGN_LEFT ? TEXT_ALIGN_LEFT : TEXT_ALIGN_CENTER).apply(); }
 
-    public int textFont() { return sp.getInt("text_font", 0); }
-    public void setTextFont(int v) { sp.edit().putInt("text_font", Math.max(0, v)).apply(); }
+    public int textFont() { return clamp(sp.getInt("text_font", 0), 0, Math.max(0, OverlayFonts.count() - 1)); }
+    public void setTextFont(int v) { sp.edit().putInt("text_font", clamp(v, 0, Math.max(0, OverlayFonts.count() - 1))).apply(); }
 
-    public int displayMs() { return sp.getInt("display_ms", 5000); }
-    public void setDisplayMs(int v) { sp.edit().putInt("display_ms", v).apply(); }
+    public int displayMs() { return clamp(sp.getInt("display_ms", 5000), 1000, 60000); }
+    public void setDisplayMs(int v) { sp.edit().putInt("display_ms", clamp(v, 1000, 60000)).apply(); }
 
     public boolean displayWhilePlaying() { return sp.getBoolean("display_while_playing", false); }
     public void setDisplayWhilePlaying(boolean v) { sp.edit().putBoolean("display_while_playing", v).apply(); }
 
-    public int position() { return sp.getInt("position", 1); }
-    public void setPosition(int v) { sp.edit().putInt("position", v).putBoolean("custom_position", false).apply(); }
+    public int position() { return clamp(sp.getInt("position", 1), 0, 14); }
+    public int selectedPosition() { return clamp(sp.getInt("selected_position", sp.getInt("position", 1)), 0, 14); }
+    public void setPosition(int v) {
+        int clamped = clamp(v, 0, 14);
+        sp.edit()
+                .putInt("position", clamped)
+                .putInt("selected_position", clamped)
+                .putInt("snap_position", -1)
+                .putBoolean("custom_position", false)
+                .apply();
+    }
+    public int snapPosition() { return clamp(sp.getInt("snap_position", -1), -1, 14); }
+    public void setSnapPosition(int v) {
+        int clamped = clamp(v, -1, 14);
+        SharedPreferences.Editor e = sp.edit().putInt("snap_position", clamped).putBoolean("custom_position", false);
+        if (clamped >= 0) e.putInt("position", clamped);
+        else e.putInt("position", selectedPosition());
+        e.apply();
+    }
 
     public boolean customPosition() { return sp.getBoolean("custom_position", false); }
     public int overlayX() { return sp.getInt("overlay_x", 0); }
     public int overlayY() { return sp.getInt("overlay_y", 0); }
     public void setOverlayPosition(int x, int y) { sp.edit().putInt("overlay_x", x).putInt("overlay_y", y).putBoolean("custom_position", true).apply(); }
-    public void resetOverlayPositionToPreset() { sp.edit().putBoolean("custom_position", false).apply(); }
+    public void resetOverlayPositionToPreset() {
+        sp.edit()
+                .putBoolean("custom_position", false)
+                .putInt("snap_position", -1)
+                .putInt("position", selectedPosition())
+                .apply();
+    }
 
-    public int corner() { return sp.getInt("corner", 18); }
-    public void setCorner(int v) { sp.edit().putInt("corner", v).apply(); }
+    public int corner() { return clamp(sp.getInt("corner", 18), 0, 60); }
+    public void setCorner(int v) { sp.edit().putInt("corner", clamp(v, 0, 60)).apply(); }
 
-    public int paddingX() { return sp.getInt("padding_x", 20); }
-    public void setPaddingX(int v) { sp.edit().putInt("padding_x", v).apply(); }
+    public int paddingX() { return clamp(sp.getInt("padding_x", 20), 0, 80); }
+    public void setPaddingX(int v) { sp.edit().putInt("padding_x", clamp(v, 0, 80)).apply(); }
 
-    public int paddingY() { return sp.getInt("padding_y", 14); }
-    public void setPaddingY(int v) { sp.edit().putInt("padding_y", v).apply(); }
+    public int paddingY() { return clamp(sp.getInt("padding_y", 14), 0, 80); }
+    public void setPaddingY(int v) { sp.edit().putInt("padding_y", clamp(v, 0, 80)).apply(); }
 
-    public int navGraceMs() { return sp.getInt("nav_grace_ms", 30000); }
-    public void setNavGraceMs(int v) { sp.edit().putInt("nav_grace_ms", v).apply(); }
+    public int navGraceMs() { return clamp(sp.getInt("nav_grace_ms", 30000), 0, 300000); }
+    public void setNavGraceMs(int v) { sp.edit().putInt("nav_grace_ms", clamp(v, 0, 300000)).apply(); }
 
     public boolean featureControls() { return sp.getBoolean("feature_controls", false); }
     public void setFeatureControls(boolean v) { sp.edit().putBoolean("feature_controls", v).apply(); }
@@ -213,8 +275,8 @@ public class Prefs {
     public boolean featureSeekBar() { return sp.getBoolean("feature_seek_bar", false); }
     public void setFeatureSeekBar(boolean v) { sp.edit().putBoolean("feature_seek_bar", v).apply(); }
 
-    public int fixedWindowWidth() { return sp.getInt("fixed_window_width", 0); }
-    public void setFixedWindowWidth(int v) { sp.edit().putInt("fixed_window_width", Math.max(0, v)).apply(); }
+    public int fixedWindowWidth() { return clamp(sp.getInt("fixed_window_width", 0), 0, 10000); }
+    public void setFixedWindowWidth(int v) { sp.edit().putInt("fixed_window_width", clamp(v, 0, 10000)).apply(); }
     public int controlsSize() { return clamp(sp.getInt("controls_size", CONTROLS_SIZE_MEDIUM), CONTROLS_SIZE_SMALL, CONTROLS_SIZE_LARGE); }
     public void setControlsSize(int v) { sp.edit().putInt("controls_size", clamp(v, CONTROLS_SIZE_SMALL, CONTROLS_SIZE_LARGE)).apply(); }
     public int controlsShape() { return clamp(sp.getInt("controls_shape", CONTROLS_SHAPE_ROUND), CONTROLS_SHAPE_ROUND, CONTROLS_SHAPE_BORDERLESS); }
@@ -224,8 +286,8 @@ public class Prefs {
     public int pauseBehavior() { return clamp(sp.getInt("pause_behavior", PAUSE_BEHAVIOR_KEEP), PAUSE_BEHAVIOR_KEEP, PAUSE_BEHAVIOR_SHORT); }
     public void setPauseBehavior(int v) { sp.edit().putInt("pause_behavior", clamp(v, PAUSE_BEHAVIOR_KEEP, PAUSE_BEHAVIOR_SHORT)).apply(); }
 
-    public int designPreset() { return sp.getInt("design_preset", 0); }
-    public void setDesignPreset(int v) { sp.edit().putInt("design_preset", v).apply(); }
+    public int designPreset() { return clamp(sp.getInt("design_preset", 0), 0, 9); }
+    public void setDesignPreset(int v) { sp.edit().putInt("design_preset", clamp(v, 0, 9)).apply(); }
 
     public String lastTriggerPackage() { return sp.getString("last_trigger_package", ""); }
     public long lastTriggerAt() { return sp.getLong("last_trigger_at", 0L); }
@@ -233,6 +295,28 @@ public class Prefs {
         sp.edit()
                 .putString("last_trigger_package", pkg == null ? "" : pkg)
                 .putLong("last_trigger_at", System.currentTimeMillis())
+                .apply();
+    }
+
+    public String lastSeenTrackPackage() { return sp.getString("last_seen_track_package", ""); }
+    public String lastSeenTrackArtist() { return sp.getString("last_seen_track_artist", ""); }
+    public String lastSeenTrackTitle() { return sp.getString("last_seen_track_title", ""); }
+    public long lastSeenTrackAt() { return sp.getLong("last_seen_track_at", 0L); }
+    public void setLastSeenTrack(String pkg, String artist, String title) {
+        sp.edit()
+                .putString("last_seen_track_package", pkg == null ? "" : pkg)
+                .putString("last_seen_track_artist", artist == null ? "" : artist)
+                .putString("last_seen_track_title", title == null ? "" : title)
+                .putLong("last_seen_track_at", System.currentTimeMillis())
+                .apply();
+    }
+
+    public String lastSystemWindowType() { return sp.getString("last_system_window_type", ""); }
+    public long lastSystemWindowAt() { return sp.getLong("last_system_window_at", 0L); }
+    public void setLastSystemWindow(String type) {
+        sp.edit()
+                .putString("last_system_window_type", type == null ? "" : type)
+                .putLong("last_system_window_at", System.currentTimeMillis())
                 .apply();
     }
 

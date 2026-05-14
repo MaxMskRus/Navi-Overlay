@@ -1,25 +1,19 @@
-# Gradle
 .gradle/
 build/
 app/build/
-
-# Local SDK / IDE
+app/.cxx/
+app/release/
+app/debug/
+app/outputs/
+buildSrc/build/
+**/build/
 local.properties
-.idea/
 *.iml
-
-# OS / editor
+*.apk
+captures/
+out/
+.idea/
 .DS_Store
-Thumbs.db
-*.swp
-*.swo
-*~
-
-# Signing / secrets
-*.jks
-*.keystore
-keystore.properties
-
-# Logs
 *.log
-
+*.tmp
+*.swp
